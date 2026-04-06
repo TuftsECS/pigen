@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# PyTorch checkpoints and model files
+*.pth
+*.pt
+
+# Data files
+*.mat
+*.h5
+*.hdf5
+
+# Training outputs
+checkpoints/
+results/
+logs/
+*.log
+gap_plots/
+cvae_training_loss.png
+
+# Generated outputs
+recommendation_results/
+*.json
+!package.json
+
+# Plots and figures (generated)
+*.png
+*.pdf
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
