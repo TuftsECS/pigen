@@ -1,7 +1,5 @@
 import torch
-import numpy as np
 import torch.nn as nn
-import torch.nn.functional as F
 
 def init_weights(module):
     if isinstance(module, nn.Linear):
@@ -10,14 +8,15 @@ def init_weights(module):
         if module.bias is not None:
             nn.init.constant_(module.bias, 0)
 
-class RRAM_PINN(nn.Module):
-    def __init__(self, hidden_size=32, embedding_size=5, const=None):
-        super(RRAM_PINN, self).__init__()
+class StatePINN(nn.Module):
+    """GRU predicting the device's normalized internal state in [-1, 1] from time, time step, voltage and material."""
+
+    def __init__(self, num_materials, hidden_size=32, embedding_size=5):
+        super().__init__()
         self.hidden_size = hidden_size
         self.embedding_size = embedding_size
-        self.const = const
-        
-        self.material_embedding = nn.Embedding(3, self.embedding_size)
+
+        self.material_embedding = nn.Embedding(num_materials, self.embedding_size)
 
         self.timestep_encoder = nn.Sequential(
             nn.Linear(1, 2),
@@ -37,7 +36,7 @@ class RRAM_PINN(nn.Module):
             nn.LayerNorm(self.hidden_size)
         )
         
-        self.gap_predictor = nn.Sequential(
+        self.state_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.Tanh(),
             nn.LayerNorm(hidden_size),
@@ -49,14 +48,14 @@ class RRAM_PINN(nn.Module):
         
         self.apply(init_weights)
     
-    def forward(self, t, dt, v, material_idx, hidden=None):
+    def forward(self, t, dt, v, material_idx):
         material_emb = self.material_embedding(material_idx)  # [1, embedding_size]
         material_emb = material_emb.expand(len(t), -1)  # [seq_len, embedding_size]
         
         dt = dt.unsqueeze(-1)  # [seq_len, 1]
         
         dt_encoded = torch.sign(dt) * torch.log1p(torch.abs(dt) * 1e12)
-        dt_features = self.timestep_encoder(dt_encoded)  # [seq_len, 8]
+        dt_features = self.timestep_encoder(dt_encoded)  # [seq_len, 2]
         
         t = t.unsqueeze(-1)  # [seq_len, 1]
         v = v.unsqueeze(-1)  # [seq_len, 1]
@@ -70,19 +69,20 @@ class RRAM_PINN(nn.Module):
             torch.cat([gru_features, dt_features], dim=-1)
         )
         
-        gap_pred = self.gap_predictor(enhanced_features).squeeze(-1)  # [seq_len]
-        
-        return gap_pred
+        return self.state_head(enhanced_features).squeeze(-1)  # [seq_len]
 
     
-class MLP_Current(nn.Module):
-    def __init__(self, hidden_size=32, embedding_size=8):
-        super(MLP_Current, self).__init__()
+class CurrentReadout(nn.Module):
+    def __init__(self, num_materials, hidden_size=32, embedding_size=8, current_mean=0.0, current_scale=1.0):
+        """Predicts current as I_init * exp(net(...)) in real units; current_mean/scale undo the current standardization."""
+        super().__init__()
         self.hidden_size = hidden_size
         self.embedding_size = embedding_size
-        self.material_embedding = nn.Embedding(3, self.embedding_size)
+        self.register_buffer('current_mean', torch.tensor(float(current_mean)))
+        self.register_buffer('current_scale', torch.tensor(float(current_scale)))
+        self.material_embedding = nn.Embedding(num_materials, self.embedding_size)
 
-        input_size = self.embedding_size + 3  # material_emb + gap + voltage + initial_I
+        input_size = self.embedding_size + 3  # material_emb + state + voltage + initial_I
         
         self.net = nn.Sequential(
             nn.Linear(input_size, hidden_size),
@@ -92,11 +92,12 @@ class MLP_Current(nn.Module):
         )
         self.apply(init_weights)
    
-    def forward(self, gap, v, initial_I, material_idx):
+    def forward(self, state, v, initial_I, material_idx):
         material_emb = self.material_embedding(material_idx)
-        material_emb = material_emb.expand(len(gap), -1)
+        material_emb = material_emb.expand(len(state), -1)
         
-        x = torch.cat([gap.unsqueeze(-1), v.unsqueeze(-1), initial_I.unsqueeze(-1), material_emb], dim=-1)
-        current = self.net(x)
-        return current.squeeze(-1)
-    
+        x = torch.cat([state.unsqueeze(-1), v.unsqueeze(-1), initial_I.unsqueeze(-1), material_emb], dim=-1)
+        log_ratio = self.net(x).squeeze(-1)
+        initial_I_real = initial_I * self.current_scale + self.current_mean
+        current_real = initial_I_real * torch.exp(log_ratio.clamp(-10, 10))
+        return (current_real - self.current_mean) / self.current_scale

@@ -443,7 +443,7 @@ def generate_pareto_plot(model_path='checkpoints/pinn_sparse.pth',
             Line2D([0], [0], marker='*', color='w', markerfacecolor='gray', markersize=15, label='Best Overall', linestyle='None'),
         ]
         
-        main_legend = ax.legend(
+        ax.legend(
             handles=legend_elements, 
             loc='upper center',
             bbox_to_anchor=(0.35, 1.2),

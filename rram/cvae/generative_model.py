@@ -10,8 +10,6 @@ from sklearn.preprocessing import StandardScaler
 import tqdm
 import math
 
-from .metric_eval import RRAMEvaluator, EnduranceCalculator
-
 class RRAM_CVAE(nn.Module):
     def __init__(self, condition_dim=3, latent_dim=8, hidden_dim=128):
         super(RRAM_CVAE, self).__init__()
@@ -94,7 +92,7 @@ class RRAMParameterDataset(Dataset):
         
         if os.path.exists(save_path) and not create_new:
             print(f"Loading existing dataset from {save_path}")
-            saved_data = torch.load(save_path)
+            saved_data = torch.load(save_path, weights_only=False)
             self.samples = saved_data['samples']
             self.performance_scaler = saved_data['performance_scaler']
             self.voltage_scaler = saved_data['voltage_scaler']
@@ -356,7 +354,7 @@ class RRAMParameterRecommender:
         }
         
         print(f"Loading CVAE model from {model_path}")
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
         
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             self.latent_dim = checkpoint.get('latent_dim', 8)
@@ -381,7 +379,7 @@ class RRAMParameterRecommender:
         
         if os.path.exists(dataset_path):
             print(f"Loading dataset from {dataset_path}")
-            saved_data = torch.load(dataset_path)
+            saved_data = torch.load(dataset_path, weights_only=False)
             self.performance_scaler = saved_data['performance_scaler']
             self.voltage_scaler = saved_data['voltage_scaler']
             self.pulse_width_scaler = saved_data['pulse_width_scaler']
@@ -490,9 +488,6 @@ class RRAMParameterRecommender:
                 pos_voltage_denorm = voltages_denorm[0]
                 neg_voltage_denorm = voltages_denorm[1]
                 
-                pulse_width_array = np.array([[pulse_width_norm.cpu().item()]])
-                pulse_width_denorm = self.pulse_width_scaler.inverse_transform(pulse_width_array)[0][0]
-                
                 voltage_range = self.voltage_ranges[material]
                 pos_min, pos_max = voltage_range['pos']
                 neg_min, neg_max = voltage_range['neg']
@@ -550,7 +545,6 @@ class RRAMParameterRecommender:
             for candidate in diverse_candidates:
                 pos_voltage = candidate['pos_voltage']
                 neg_voltage = candidate['neg_voltage']
-                pulse_width = candidate['pulse_width']
                 
                 try:
                     result = self.evaluator.evaluate(material, pos_voltage, neg_voltage)
@@ -742,7 +736,6 @@ class RRAMParameterRecommender:
             ('Switching Time Optimization', candidates_by_switching_time)
         ]
         
-        similarity_threshold = self.similarity_threshold
         voltage_difference_threshold = 0.15
 
         for target_name, sorted_candidates in optimization_targets:

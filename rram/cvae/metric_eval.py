@@ -1,10 +1,10 @@
 import os
 import numpy as np
 import torch
-import argparse
 from typing import Tuple, Dict
-from src.data import RRAMDataset, Constants
-from src.models import RRAM_PINN, MLP_Current
+from core import CurrentReadout, SequenceDataset, StatePINN, load_checkpoint, prepare_sequence
+from core.training import RAMP_SAMPLES
+from ..physics import RRAMPhysics
 
 class RRAMEvaluator:
     def __init__(self, model_path, data_path, output_dir, device=None):
@@ -14,35 +14,26 @@ class RRAMEvaluator:
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {self.device}")
         
-        self.const = Constants()
+        self.physics = RRAMPhysics()
+        self.materials = list(self.physics.materials)
+        self.material_to_idx = {mat: idx for idx, mat in enumerate(self.materials)}
         
         self.checkpoint, self.pinn_model, self.mlp_model = self.load_model(model_path)
         self.dataset = self.load_data(data_path, self.checkpoint['scalers'])
         self.scalers = self.checkpoint['scalers']
         
-        self.materials = ['HfO2', 'Al2O3', 'TiO2']
-        self.material_to_idx = {mat: idx for idx, mat in enumerate(self.materials)}
-        
         self.endurance_calculator = EnduranceCalculator()
 
     def load_model(self, model_path):
         print(f"Loading model from {model_path}")
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = load_checkpoint(model_path, self.device)
         
         state = checkpoint['pinn_model_state_dict']
         embedding_size = state['material_embedding.weight'].shape[1]
         hidden_size = state['gru.weight_hh_l0'].shape[1]
         
-        pinn_model = RRAM_PINN(
-            hidden_size=hidden_size, 
-            embedding_size=embedding_size,
-            const=self.const
-        ).to(self.device)
-        
-        mlp_model = MLP_Current(
-            hidden_size=hidden_size,
-            embedding_size=embedding_size
-        ).to(self.device)
+        pinn_model = StatePINN(len(self.materials), hidden_size=hidden_size, embedding_size=embedding_size).to(self.device)
+        mlp_model = CurrentReadout(len(self.materials), hidden_size=hidden_size, embedding_size=embedding_size).to(self.device)
         
         pinn_model.load_state_dict(checkpoint['pinn_model_state_dict'])
         mlp_model.load_state_dict(checkpoint['mlp_model_state_dict'])
@@ -58,8 +49,9 @@ class RRAMEvaluator:
     
     def load_data(self, data_path, scalers):
         print(f"Loading dataset from {data_path}")
-        dataset = RRAMDataset(
+        dataset = SequenceDataset(
             data_path=data_path,
+            physics=self.physics,
             fit_scaler=False,
             is_train=True,
             use_full_dataset=True,
@@ -77,66 +69,23 @@ class RRAMEvaluator:
         return dataset
     
     def predict_sequence(self, sequence):
-        time_seq_full = sequence['time'].to(self.device)
-        dt_seq_full = sequence['dt'].to(self.device)
-        voltage_seq_full = sequence['voltage'].to(self.device)
-        true_current_full = sequence['current'].to(self.device)
-        material_idx = sequence['material_idx'].to(self.device)
-        
-        time_seq = time_seq_full[2:]
-        dt_seq = dt_seq_full[2:]
-        voltage_seq = voltage_seq_full[2:]
-        true_current = true_current_full[2:]
-        initial_I = torch.ones_like(voltage_seq) * true_current[0]
-        
-        time_scale = torch.tensor(self.scalers['time'].scale_[0], device=self.device)
-        time_mean = torch.tensor(self.scalers['time'].mean_[0], device=self.device)
-        time_real_full = time_seq_full * time_scale + time_mean
-        
-        voltage_scale = torch.tensor(self.scalers['voltage'].scale_[0], device=self.device)
-        voltage_mean = torch.tensor(self.scalers['voltage'].mean_[0], device=self.device)
-        voltage_real_full = voltage_seq_full * voltage_scale + voltage_mean
-        
-        dt_scale = torch.tensor(self.scalers['dt'].scale_[0], device=self.device)
-        dt_mean = torch.tensor(self.scalers['dt'].mean_[0], device=self.device)
-        dt_real_full = dt_seq_full * dt_scale + dt_mean
-        
+        s = prepare_sequence(sequence, self.scalers, self.device)
         current_scale = torch.tensor(self.scalers['current'].scale_[0], device=self.device)
         current_mean = torch.tensor(self.scalers['current'].mean_[0], device=self.device)
-        true_current_real_full = true_current_full * current_scale + current_mean
-        
-        time_real = time_real_full[2:]
-        voltage_real = voltage_real_full[2:]
-        dt_real = dt_real_full[2:]
-        true_current_real = true_current_real_full[2:]
         
         with torch.no_grad():
-            gap = self.pinn_model(time_seq, dt_real, voltage_seq, material_idx)
-            pred_current = self.mlp_model(gap, voltage_seq, initial_I, material_idx)
+            gap = self.pinn_model(s['time'], s['dt_real'], s['voltage'], s['material_idx'])
+            pred_current = self.mlp_model(gap, s['voltage'], s['initial_current'], s['material_idx'])
             pred_current_real = pred_current * current_scale + current_mean
 
-        return time_real, dt_real, voltage_real, true_current_real, pred_current_real, gap
+        return (s['time_real_full'][RAMP_SAMPLES:], s['dt_real'], s['voltage_real_full'][RAMP_SAMPLES:],
+                s['current_real_full'][RAMP_SAMPLES:], pred_current_real, gap)
     
     def evaluate(self, material, pos_voltage, neg_voltage):
         if material not in self.materials:
             raise ValueError(f"Unknown material: {material}. Supported materials: {self.materials}")
             
         material_idx = self.material_to_idx[material]
-        voltage_scale = self.scalers['voltage'].scale_[0]
-        voltage_mean = self.scalers['voltage'].mean_[0]
-        
-        available_voltages = []
-        for sequence in self.dataset:
-            if sequence['material_idx'].item() != material_idx:
-                continue
-            
-            seq_voltage = sequence['voltage'][-1].item()
-            seq_voltage_real = seq_voltage * voltage_scale + voltage_mean
-            available_voltages.append(seq_voltage_real)
-        
-        available_voltages = sorted(list(set([round(v, 2) for v in available_voltages])))
-        pos_voltages = [v for v in available_voltages if v > 0]
-        neg_voltages = [v for v in available_voltages if v < 0]
         
         pos_matched_sequence, pos_matched_idx, pos_actual_voltage = self._find_closest_sequence(material_idx, pos_voltage, "positive")
         neg_matched_sequence, neg_matched_idx, neg_actual_voltage = self._find_closest_sequence(material_idx, neg_voltage, "negative")
@@ -283,19 +232,19 @@ class EnduranceCalculator:
         
         self.material_params = {
             'HfO2': {
-                'Us': 1.2,            # Same as Eag in Constants
+                'Us': RRAMPhysics.material_params['HfO2']['Eag'],  # Switching barrier = Eag
                 'Uf': 1.6,            # Failure barrier > Eag
                 'Cth': 2.17e-17,
                 'Tau_th': 3.5e-10      # Thermal time constant [s]
             },
             'Al2O3': {
-                'Us': 1.0,             # Same as Eag in Constants
+                'Us': RRAMPhysics.material_params['Al2O3']['Eag'],  # Switching barrier = Eag
                 'Uf': 1.6,             # Failure barrier > Eag  
                 'Cth': 2.12e-17,
                 'Tau_th': 3.5e-10
             },
             'TiO2': {
-                'Us': 1.7,            # Same as Eag in Constants
+                'Us': RRAMPhysics.material_params['TiO2']['Eag'],  # Switching barrier = Eag
                 'Uf': 2.3,            # Failure barrier > Eag
                 'Cth': 2.26e-17,
                 'Tau_th': 3.5e-10
@@ -390,32 +339,3 @@ def get_frequency(switching_time):
         frequency = max_frequency
     
     return frequency
-
-def main():
-    parser = argparse.ArgumentParser(description='RRAM model evaluation tool')
-    parser.add_argument('--model_path', type=str, default='checkpoints/pinn_sparse.pth', help='model checkpoint path')
-    parser.add_argument('--data_path', type=str, default='data/rram_data.mat', help='dataset path')
-    parser.add_argument('--output_dir', type=str, default='test_results', help='output directory')
-    parser.add_argument('--device', type=str, default='cuda', help='calculation device (cuda/cpu)')
-    parser.add_argument('--material', type=str, required=True, choices=['HfO2', 'Al2O3', 'TiO2'], help='material type')
-    parser.add_argument('--pos_voltage', type=float, required=True, help='positive voltage value (V)')
-    parser.add_argument('--neg_voltage', type=float, required=True, help='negative voltage value (V)')
-    
-    args = parser.parse_args()
-    
-    evaluator = RRAMEvaluator(
-        model_path=args.model_path,
-        data_path=args.data_path,
-        output_dir=args.output_dir,
-        device=args.device
-    )
-    try:
-        result = evaluator.evaluate(args.material, args.pos_voltage, args.neg_voltage)
-        print("\nEvaluation completed successfully!")
-    except Exception as e:
-        print(f"\nError occurred during evaluation: {e}")
-        import traceback
-        traceback.print_exc()
-
-if __name__ == "__main__":
-    main()

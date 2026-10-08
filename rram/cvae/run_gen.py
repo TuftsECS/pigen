@@ -1,16 +1,17 @@
 import argparse
+import json
 import os
 import torch
 
-from src.cvae.generative_model import RRAMParameterRecommender, train_cvae
-from src.cvae.metric_eval import RRAMEvaluator
-from src.cvae.pareto_front_rram import generate_pareto_plot
+from .generative_model import RRAMParameterRecommender, train_cvae
+from .metric_eval import RRAMEvaluator
+from .pareto_front import generate_pareto_plot
 
 def main():
     parser = argparse.ArgumentParser(description='RRAM CVAE Model and Pareto Front Generation Tool')
 
-    parser.add_argument('--model_path', type=str, default='checkpoints/pinn_sparse.pth', help='Path to the trained PINN model checkpoint')
-    parser.add_argument('--data_path', type=str, default='data/rram_data.mat', help='Path to the RRAM dataset')
+    parser.add_argument('--model_path', type=str, required=True, help='Trained PINN checkpoint from train.py (e.g. checkpoints/best_logt_mse_checkpoint.pth)')
+    parser.add_argument('--data_path', type=str, required=True, help='Path to the RRAM dataset (.mat)')
     parser.add_argument('--output_dir', type=str, default='recommendation_results', help='Directory to save outputs')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for computation (cuda/cpu)')
     parser.add_argument('--generate_pareto', action='store_true', help='Generate and save the Pareto front plot.')
@@ -98,7 +99,6 @@ def main():
         )
 
         if recommendations:
-            import json
             print("\n--- Top Recommendations ---")
             for i, rec in enumerate(recommendations):
                 print(f"  #{i+1}: {rec['material']} - Vset={rec['pos_voltage']:.2f}V, Vreset={rec['neg_voltage']:.2f}V")

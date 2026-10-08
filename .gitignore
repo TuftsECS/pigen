@@ -28,12 +28,16 @@ results/
 logs/
 *.log
 gap_plots/
-cvae_training_loss.png
+
+# HPC (SLURM) job logs and cluster-specific job scripts
+hpc_log/
+slurm-*.out
+/run_*.sh
+/test_*.sh
 
 # Generated outputs
 recommendation_results/
 *.json
-!package.json
 
 # Plots and figures (generated)
 *.png

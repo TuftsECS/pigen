@@ -1,10 +1,9 @@
-import os
 import torch
 import numpy as np
 from torch.utils.data import Dataset
 from scipy.io import loadmat
 from sklearn.preprocessing import StandardScaler
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Optional, Union
 from collections import defaultdict
 import logging
 
@@ -13,10 +12,13 @@ def format_voltage(voltage: Union[float, np.ndarray, torch.Tensor], precision: i
         voltage = float(voltage)
     return round(voltage, precision)
 
-class RRAMDataset(Dataset):
+class SequenceDataset(Dataset):
+    """Voltage/current switching sequences of one device, read from a .mat file and split by `physics` conventions."""
+
     def __init__(
         self, 
         data_path: str,
+        physics,
         fit_scaler: bool = False,
         is_train: bool = True,
         seed: Optional[int] = None,
@@ -28,25 +30,20 @@ class RRAMDataset(Dataset):
         self.logger = logger if logger is not None else logging.getLogger(__name__)
         self.scalers = None
         
-        self.logger.info(f"{'Training' if is_train else 'Validation'} Dataset: Loading data...")
         data = loadmat(data_path)
-        
         num_sequences = len([k for k in data.keys() if k.startswith('time_')])
-        self.logger.info(f"Found {num_sequences} sequences")
+        self.num_total = num_sequences
+        # Training voltages per material of a stride split (identical for the training and validation sets).
+        self.train_voltages = {}
         
         self.sequences = []
-        voltage_set = set()
         sequence_voltage_map = {}
         
-        self.material_to_idx = {
-            'HfO2': 0,
-            'Al2O3': 1, 
-            'TiO2': 2
-        }
+        self.material_to_idx = {material: idx for idx, material in enumerate(physics.materials)}
         
         for i in range(num_sequences):
             time_orig = data[f'time_{i}'].flatten()
-            initial_time = np.array([7e-12])
+            initial_time = np.array([physics.initial_time])
             time_with_initial = np.concatenate([initial_time, time_orig])
             dt = time_with_initial[1:] - time_with_initial[:-1]
             
@@ -62,7 +59,6 @@ class RRAMDataset(Dataset):
                 'material_idx': torch.tensor(self.material_to_idx[data[f'material_{i}'][0]])
             }
             voltage_val = format_voltage(sequence['voltage'][-1])
-            voltage_set.add(voltage_val)
             sequence_voltage_map[i] = voltage_val
             self.sequences.append(sequence)
         
@@ -100,13 +96,8 @@ class RRAMDataset(Dataset):
                 final_indices = all_indices[train_size:]
         else:
             target_step = voltage_stride
-            self.logger.info(f"Using target voltage step for non-full dataset: {target_step}")
             
-            material_boundaries = {
-                'HfO2': [1.27, -1.32],
-                'Al2O3': [1.0, -1.18],
-                'TiO2': [1.54, -1.45]
-            }
+            material_boundaries = physics.split_voltages
             final_selected_indices = set()
             max_gap_factor = 1.25
 
@@ -228,41 +219,25 @@ class RRAMDataset(Dataset):
                     self.logger.debug(f"  c. Skipping gap filling for {material}: Not enough points after pruning.")
 
                 final_voltages_sorted = sorted(list(final_material_target_voltages))
-                if is_train:
-                    self.logger.info(f"  Final target voltages for {material}: {final_voltages_sorted}")
-                else:
-                    self.logger.debug(f"  Final target voltages for {material}: {final_voltages_sorted}")
+                self.train_voltages[material] = final_voltages_sorted
+                self.logger.debug(f"  Final target voltages for {material}: {final_voltages_sorted}")
 
-                selected_indices_for_material = 0
                 for idx in material_indices:
                     v = sequence_voltage_map.get(idx)
                     if v is not None and v in final_material_target_voltages:
                         final_selected_indices.add(idx)
-                        selected_indices_for_material += 1
-                self.logger.info(f"  Selected {selected_indices_for_material} sequences for {material}.")
-            
-            self.logger.info(f"Total sequences selected across all materials: {len(final_selected_indices)}")
 
             final_selected_indices_array = np.array(list(final_selected_indices), dtype=int)
             all_indices = np.arange(len(self.sequences))
 
             if is_train:
                 final_indices = final_selected_indices_array
-                self.logger.info(f"Using {len(final_indices)} selected sequences for TRAINING.")
             else:
                 final_indices = np.setdiff1d(all_indices, final_selected_indices_array, assume_unique=True)
-                self.logger.info(f"Using {len(final_indices)} sequences for VALIDATION (all excluding training targets).")
                 
             rng.shuffle(final_indices)
             
         self.sequences = [self.sequences[i] for i in final_indices]
-        
-        self.logger.info(f"\nDataset split information:")
-        self.logger.info(f"{'Training' if is_train else 'Validation'} set size: {len(self.sequences)}")
-        if num_sequences > 0:
-             self.logger.info(f"Percentage of total: {len(self.sequences)/num_sequences*100:.1f}%")
-        else:
-             self.logger.info("Percentage of total: N/A (total sequences is zero)")
         
         if fit_scaler:
             self.scalers = self._fit_scalers()
@@ -322,94 +297,3 @@ class RRAMDataset(Dataset):
             material = sequence['material']
             material_counts[material] = material_counts.get(material, 0) + 1
         return material_counts
-
-    @staticmethod
-    def _load_data(file_path: str, logger) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Data file not found: {file_path}")
-            
-        try:
-            data = loadmat(file_path)
-            inputs_list = []
-            outputs_list = []
-            gapi_list = []
-            
-            for key, value in data.items():
-                if isinstance(key, str) and not key.startswith('__'):
-                    try:
-                        pw, v, gapi = eval(key)  # noqa: S307 - parsing structured keys from internal .mat files
-                        inputs_list.append([pw, v])
-                        outputs_list.append(value)
-                        gapi_list.append(gapi)
-                    except (ValueError, SyntaxError, TypeError):
-                        logger.warning(f"Skipping invalid key: {key}")
-                        continue
-            
-            if not inputs_list:
-                raise ValueError("No valid data found in file")
-            
-            logger.info(f"Successfully loaded {len(inputs_list)} data points")
-            return (
-                np.array(inputs_list), 
-                np.array(outputs_list).reshape(-1), 
-                np.array(gapi_list)
-            )
-            
-        except Exception as e:
-            logger.error(f"Error loading data: {str(e)}")
-            raise
-    
-def collate_sequences(batch):
-    return {
-        'time': [item['time'] for item in batch],
-        'voltage': [item['voltage'] for item in batch],
-        'current': [item['current'] for item in batch]
-    }
-
-class Constants:
-    def __init__(self, material='HfO2'):
-        self.kb = 1.380649e-23        # Boltzmann constant [J/K]
-        self.q = 1.60217663e-19       # Elementary charge [C]
-        self.T0 = 273 + 25            # Ambient temperature [K]
-        self.tox = 5e-9               # Oxide thickness [m] (L in VA)
-        self.a0 = 0.25e-9             # Atomic distance [m]
-        self.gap_min = 0.1e-9         # Minimum gap [m]
-        self.gap_max = 1.7e-9         # Maximum gap [m]
-        self.Tau_th = 2.3e-10         # Effective thermal time constant [s]
-        self.g1 = 1e-9                # Length scale for gamma calculation [m]
-        
-        self.material_params = {
-            'HfO2': {
-                'Eag': 1.241,
-                'Ear': 1.24,
-                'Cth': 3.05e-18
-            },
-            'Al2O3': {
-                'Eag': 1.001,
-                'Ear': 1.0,
-                'Cth': 2.98e-18
-            },
-            'TiO2': {
-                'Eag': 1.501,
-                'Ear': 1.50,
-                'Cth': 3.18e-18
-            }
-        }
-        
-        self.update_material(material)
-        
-        self.gamma0_pos = 15            #  Field enhancement factor
-        self.gamma0_neg = 8.5
-        self.beta = 1.25              # Field enhancement coefficient
-        self.Vel0_pos = 120      # Base velocity [m/s]
-        self.Vel0_neg = 150     # Base velocity [m/s]
-
-    def update_material(self, material):
-        if material not in self.material_params:
-            raise ValueError(f"Unknown material: {material}")
-            
-        params = self.material_params[material]
-        self.Eag = params['Eag']
-        self.Ear = params['Ear']
-        self.Cth = params['Cth']
-        self.current_material = material
