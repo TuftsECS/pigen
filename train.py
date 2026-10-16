@@ -18,7 +18,7 @@ CHECKPOINT_METRICS = [
 ]
 # Start learning rates validated on rram.mat, used when --learning_rate_* is not given.
 DEFAULT_LR = {'pde': 1e-3, 'no_pde': 3e-4}
-# Shared copy of the dataset on the Tufts HPC cluster, used when no dataset is given.
+# Shared dataset on the Tufts HPC cluster.
 DEFAULT_DATA_PATH = '/cluster/tufts/donatolab/shared/datasets/pigen/rram.mat'
 
 def get_args():

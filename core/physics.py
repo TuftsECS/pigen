@@ -14,8 +14,7 @@ class DevicePhysics:
     split_voltages = {}
     # Time [s] before the first sample of a sequence, used to compute the first time step.
     initial_time = 0.0
-    # Per material, voltage ranges of the positive and negative write pulses that parameter recommendation
-    # (core.cvae) designs over, e.g. {'HfO2': {'pos': (1.5, 2.0), 'neg': (-2.0, -1.5)}}.
+    # Per material, write-pulse voltage ranges for core.cvae, e.g. {'HfO2': {'pos': (1.5, 2.0), 'neg': (-2.0, -1.5)}}.
     design_space = {}
 
     def simulate(self, dt, voltage, current, material):
@@ -31,9 +30,5 @@ class DevicePhysics:
         raise NotImplementedError
 
     def endurance(self, current, voltage, dt, material):
-        """Endurance [cycles] of one write pulse and a dict of device-specific metrics.
-
-        Inputs are the pulse's 1-D tensors in physical units (current, voltage, time step); ``material`` is a
-        name from ``materials``. Needed only by parameter recommendation (core.cvae).
-        """
+        """Endurance [cycles] of one write pulse and a dict of device-specific metrics (inputs as in ``simulate``)."""
         raise NotImplementedError

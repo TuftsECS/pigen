@@ -4,10 +4,10 @@ from typing import Tuple, Dict
 
 
 class EnduranceCalculator:
-    """Write endurance of an RRAM cell from the ratio of its failure time to its switching time at the pulse's peak temperature."""
+    """RRAM write endurance: failure time over switching time at the pulse's peak temperature."""
 
     def __init__(self, switching_barriers):
-        """``switching_barriers``: per material, the switching activation energy Us [eV] (RRAMPhysics' Eag)."""
+        """``switching_barriers``: per material Us [eV] (RRAMPhysics' Eag)."""
         self.kb = 1.380649e-23        # Boltzmann constant [J/K]
         self.q = 1.60217663e-19       # Elementary charge [C]
         self.T0 = 273 + 25            # Ambient temperature [K]
@@ -35,7 +35,7 @@ class EnduranceCalculator:
         self.current_material = 'HfO2'
         
     def calculate_temperature(self, current: torch.Tensor, voltage: torch.Tensor, dt: torch.Tensor) -> float:
-        """Peak temperature of one operation, integrating the Joule heating implicitly over its time steps as rram.va does."""
+        """Peak Joule-heating temperature of one pulse (implicit Euler, as in rram.va)."""
         cth = self.material_params[self.current_material]['Cth']
         power = (voltage * current).abs().detach().cpu().double().numpy()
         temperature = peak = self.T0

@@ -19,7 +19,7 @@ plt.rcParams.update({
     'legend.fontsize': 15
 })
 
-# Marker colors, assigned to the device's materials in order (for RRAM: HfO2, Al2O3, TiO2).
+# Marker colors, assigned to materials in order.
 MATERIAL_PALETTE = [
     {'fill': '#FBD178', 'edge': '#EE8227'},
     {'fill': '#F9C3BF', 'edge': '#EB716B'},

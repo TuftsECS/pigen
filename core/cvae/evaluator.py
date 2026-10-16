@@ -8,10 +8,7 @@ from ..training import RAMP_SAMPLES
 ENERGY_THRESHOLDS = (0.1e-12, 1e-12, 5e-12)
 
 class DeviceEvaluator:
-    """Performance of a device written by one positive and one negative constant-voltage pulse, predicted by a trained PINN.
-
-    A requested pulse voltage is matched to the dataset sequence with the closest final voltage of the same polarity.
-    """
+    """Write performance predicted by a trained PINN, using the dataset sequence closest to each pulse voltage."""
 
     def __init__(self, physics, model_path, data_path, output_dir, device=None):
         self.output_dir = output_dir

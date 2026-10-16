@@ -8,7 +8,7 @@ from core.cvae.evaluator import DeviceEvaluator
 from core.cvae.generative_model import ParameterRecommender, train_cvae
 from core.cvae.pareto_front import generate_pareto_plot
 
-# Shared copy of the dataset on the Tufts HPC cluster, used when no dataset is given.
+# Shared dataset on the Tufts HPC cluster.
 DEFAULT_DATA_PATH = '/cluster/tufts/donatolab/shared/datasets/pigen/rram.mat'
 
 def main():

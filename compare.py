@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 REPO = Path(__file__).resolve().parent
-# Shared copy of the dataset on the Tufts HPC cluster, used when no dataset is given.
+# Shared dataset on the Tufts HPC cluster.
 DEFAULT_DATA = '/cluster/tufts/donatolab/shared/datasets/pigen/rram.mat'
 SPLIT_PATTERN = re.compile(r'full|stride_\d*\.?\d+')
 EPOCH_PATTERN = re.compile(
