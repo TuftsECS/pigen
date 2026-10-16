@@ -10,12 +10,14 @@ from sklearn.preprocessing import StandardScaler
 import tqdm
 import math
 
-class RRAM_CVAE(nn.Module):
-    def __init__(self, condition_dim=3, latent_dim=8, hidden_dim=128):
-        super(RRAM_CVAE, self).__init__()
+class DesignCVAE(nn.Module):
+    """CVAE over device designs (material, positive/negative pulse voltage, pulse width) conditioned on target performance."""
+
+    def __init__(self, num_materials, condition_dim=3, latent_dim=8, hidden_dim=128):
+        super(DesignCVAE, self).__init__()
         
         self.encoder = nn.Sequential(
-            nn.Linear(6 + condition_dim, hidden_dim),  # 6: material(3) + pos_voltage + neg_voltage + pulse_width
+            nn.Linear(num_materials + 3 + condition_dim, hidden_dim),  # material one-hot + pos_voltage + neg_voltage + pulse_width
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU()
@@ -30,7 +32,7 @@ class RRAM_CVAE(nn.Module):
             nn.ReLU()
         )
         
-        self.material_out = nn.Linear(hidden_dim, 3)
+        self.material_out = nn.Linear(hidden_dim, num_materials)
         self.pos_voltage_out = nn.Linear(hidden_dim, 1)
         self.neg_voltage_out = nn.Linear(hidden_dim, 1)
         self.pulse_width_out = nn.Linear(hidden_dim, 1)
@@ -75,8 +77,8 @@ def cvae_loss_function(material_pred, voltage_pos_pred, voltage_neg_pred, pulse_
     
     return total_loss, material_loss, voltage_pos_loss, voltage_neg_loss, pulse_width_loss, kl_loss
 
-class RRAMParameterDataset(Dataset):
-    def __init__(self, evaluator, num_samples=500, create_new=False, save_path='rram_cvae_dataset.pt',
+class DesignDataset(Dataset):
+    def __init__(self, evaluator, num_samples=500, create_new=False, save_path='cvae_dataset.pt',
                 min_pulse_width=10e-9):
         self.evaluator = evaluator
         self.materials = evaluator.materials
@@ -84,11 +86,7 @@ class RRAMParameterDataset(Dataset):
         self.device = evaluator.device
         self.min_pulse_width = min_pulse_width
         
-        self.voltage_ranges = {
-            'HfO2': {'pos': (1.5, 2.0), 'neg': (-2.0, -1.5)},
-            'TiO2': {'pos': (1.65, 2.0), 'neg': (-2.0, -1.65)},
-            'Al2O3': {'pos': (1.38, 2.0), 'neg': (-2.0, -1.38)}
-        }
+        self.voltage_ranges = evaluator.physics.design_space
         
         if os.path.exists(save_path) and not create_new:
             print(f"Loading existing dataset from {save_path}")
@@ -199,7 +197,7 @@ class RRAMParameterDataset(Dataset):
         sample = self.samples[idx]
         
         material_idx = torch.tensor(sample['material_idx'], dtype=torch.long)
-        material_onehot = F.one_hot(material_idx, num_classes=3).float()
+        material_onehot = F.one_hot(material_idx, num_classes=len(self.materials)).float()
         
         pos_voltage = torch.tensor([sample['pos_voltage']], dtype=torch.float32)
         neg_voltage = torch.tensor([sample['neg_voltage']], dtype=torch.float32)
@@ -231,10 +229,10 @@ class RRAMParameterDataset(Dataset):
         }
 
 def train_cvae(evaluator, num_epochs=50, batch_size=32, latent_dim=8, hidden_dim=128,
-               dataset_path='rram_cvae_dataset.pt', model_save_path='cvae_model.pth',
+               dataset_path='cvae_dataset.pt', model_save_path='cvae_model.pth',
                create_new_dataset=False, min_pulse_width=10e-9,
                early_stopping_patience=20, early_stopping_delta=1e-4):
-    dataset = RRAMParameterDataset(
+    dataset = DesignDataset(
         evaluator, 
         num_samples=500, 
         create_new=create_new_dataset, 
@@ -245,7 +243,7 @@ def train_cvae(evaluator, num_epochs=50, batch_size=32, latent_dim=8, hidden_dim
     
     device = evaluator.device
     condition_dim = 3  # endurance, switching time, energy
-    model = RRAM_CVAE(condition_dim, latent_dim, hidden_dim).to(device)
+    model = DesignCVAE(len(evaluator.materials), condition_dim, latent_dim, hidden_dim).to(device)
     
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     
@@ -339,19 +337,15 @@ def train_cvae(evaluator, num_epochs=50, batch_size=32, latent_dim=8, hidden_dim
     
     return model, dataset
 
-class RRAMParameterRecommender:
-    def __init__(self, model_path, evaluator, dataset_path='rram_cvae_dataset.pt', min_pulse_width=10e-9, similarity_threshold=0.05):
+class ParameterRecommender:
+    def __init__(self, model_path, evaluator, dataset_path='cvae_dataset.pt', min_pulse_width=10e-9, similarity_threshold=0.05):
         self.evaluator = evaluator
         self.device = evaluator.device
         self.materials = evaluator.materials
         self.min_pulse_width = min_pulse_width
         self.similarity_threshold = similarity_threshold
         
-        self.voltage_ranges = {
-            'HfO2': {'pos': (1.5, 2.0), 'neg': (-2.0, -1.5)},
-            'TiO2': {'pos': (1.65, 2.0), 'neg': (-2.0, -1.65)},
-            'Al2O3': {'pos': (1.38, 2.0), 'neg': (-2.0, -1.38)}
-        }
+        self.voltage_ranges = evaluator.physics.design_space
         
         print(f"Loading CVAE model from {model_path}")
         checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
@@ -361,8 +355,8 @@ class RRAMParameterRecommender:
             self.hidden_dim = checkpoint.get('hidden_dim', 128)
             self.condition_dim = checkpoint.get('condition_dim', 3)
             
-            self.model = RRAM_CVAE(
-                self.condition_dim, self.latent_dim, self.hidden_dim
+            self.model = DesignCVAE(
+                len(self.materials), self.condition_dim, self.latent_dim, self.hidden_dim
             ).to(self.device)
             self.model.load_state_dict(checkpoint['model_state_dict'])
         else:
@@ -370,8 +364,8 @@ class RRAMParameterRecommender:
             self.hidden_dim = 128
             self.condition_dim = 3
             
-            self.model = RRAM_CVAE(
-                self.condition_dim, self.latent_dim, self.hidden_dim
+            self.model = DesignCVAE(
+                len(self.materials), self.condition_dim, self.latent_dim, self.hidden_dim
             ).to(self.device)
             self.model.load_state_dict(checkpoint)
         
@@ -385,7 +379,7 @@ class RRAMParameterRecommender:
             self.pulse_width_scaler = saved_data['pulse_width_scaler']
         else:
             print(f"Dataset not found at {dataset_path}. Creating a small dataset to get scalers...")
-            dataset = RRAMParameterDataset(
+            dataset = DesignDataset(
                 evaluator, 
                 num_samples=30, 
                 create_new=True, 

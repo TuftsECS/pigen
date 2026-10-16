@@ -146,7 +146,8 @@ def main():
             pinn_scheduler.step(train_mlp_loss)
             mlp_scheduler.step(train_mlp_loss)
 
-        if pinn_scheduler.is_better(train_mlp_loss, best_train_loss):
+        # Same improvement test as ReduceLROnPlateau (mode 'min', relative threshold).
+        if train_mlp_loss < best_train_loss * (1 - plateau_kwargs['threshold']):
             best_train_loss = train_mlp_loss
             epochs_without_improvement = 0
         elif all(g['lr'] <= config['min_lr'] for o in (pinn_optimizer, mlp_optimizer) for g in o.param_groups):

@@ -1,28 +1,32 @@
 import os
 import numpy as np
 import torch
-from typing import Tuple, Dict
-from core import CurrentReadout, SequenceDataset, StatePINN, load_checkpoint, prepare_sequence
-from core.training import RAMP_SAMPLES
-from ..physics import RRAMPhysics
+from .. import CurrentReadout, SequenceDataset, StatePINN, load_checkpoint, prepare_sequence
+from ..training import RAMP_SAMPLES
 
-class RRAMEvaluator:
-    def __init__(self, model_path, data_path, output_dir, device=None):
+# Cumulative energies [J] whose crossing times are reported for each pulse.
+ENERGY_THRESHOLDS = (0.1e-12, 1e-12, 5e-12)
+
+class DeviceEvaluator:
+    """Performance of a device written by one positive and one negative constant-voltage pulse, predicted by a trained PINN.
+
+    A requested pulse voltage is matched to the dataset sequence with the closest final voltage of the same polarity.
+    """
+
+    def __init__(self, physics, model_path, data_path, output_dir, device=None):
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
         
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {self.device}")
         
-        self.physics = RRAMPhysics()
+        self.physics = physics
         self.materials = list(self.physics.materials)
         self.material_to_idx = {mat: idx for idx, mat in enumerate(self.materials)}
         
         self.checkpoint, self.pinn_model, self.mlp_model = self.load_model(model_path)
         self.dataset = self.load_data(data_path, self.checkpoint['scalers'])
         self.scalers = self.checkpoint['scalers']
-        
-        self.endurance_calculator = EnduranceCalculator()
 
     def load_model(self, model_path):
         print(f"Loading model from {model_path}")
@@ -74,12 +78,12 @@ class RRAMEvaluator:
         current_mean = torch.tensor(self.scalers['current'].mean_[0], device=self.device)
         
         with torch.no_grad():
-            gap = self.pinn_model(s['time'], s['dt_real'], s['voltage'], s['material_idx'])
-            pred_current = self.mlp_model(gap, s['voltage'], s['initial_current'], s['material_idx'])
+            state = self.pinn_model(s['time'], s['dt_real'], s['voltage'], s['material_idx'])
+            pred_current = self.mlp_model(state, s['voltage'], s['initial_current'], s['material_idx'])
             pred_current_real = pred_current * current_scale + current_mean
 
         return (s['time_real_full'][RAMP_SAMPLES:], s['dt_real'], s['voltage_real_full'][RAMP_SAMPLES:],
-                s['current_real_full'][RAMP_SAMPLES:], pred_current_real, gap)
+                s['current_real_full'][RAMP_SAMPLES:], pred_current_real, state)
     
     def evaluate(self, material, pos_voltage, neg_voltage):
         if material not in self.materials:
@@ -90,8 +94,8 @@ class RRAMEvaluator:
         pos_matched_sequence, pos_matched_idx, pos_actual_voltage = self._find_closest_sequence(material_idx, pos_voltage, "positive")
         neg_matched_sequence, neg_matched_idx, neg_actual_voltage = self._find_closest_sequence(material_idx, neg_voltage, "negative")
         
-        pos_result = self._evaluate_single_sequence(pos_matched_sequence, pos_matched_idx, material, "SET")
-        neg_result = self._evaluate_single_sequence(neg_matched_sequence, neg_matched_idx, material, "RESET")
+        pos_result = self._evaluate_single_sequence(pos_matched_sequence, pos_matched_idx, material, "positive")
+        neg_result = self._evaluate_single_sequence(neg_matched_sequence, neg_matched_idx, material, "negative")
         
         merged_result = self._merge_results(pos_result, neg_result)
         
@@ -127,9 +131,7 @@ class RRAMEvaluator:
         return closest_sequence, closest_idx, closest_voltage
     
     def _evaluate_single_sequence(self, sequence, sequence_idx, material, operation_type):
-        material_idx = self.material_to_idx[material]
-        
-        time_real, dt_real, voltage_real, true_current_real, pred_current_real, gap = self.predict_sequence(sequence)
+        time_real, dt_real, voltage_real, true_current_real, pred_current_real, state = self.predict_sequence(sequence)
         stable_idx = get_stable_index(pred_current_real)
         
         if stable_idx < len(time_real):
@@ -138,15 +140,8 @@ class RRAMEvaluator:
         else:
             actual_switching_time = (time_real[-1] - time_real[0]).item()
         
-        endurance, metrics = self.endurance_calculator.calculate_endurance(
-            pred_current_real.mean().item(), 
-            voltage_real.mean().item(), 
-            dt_real,
-            material
-        )
-        threshold_times, total_energy = get_energy_consumption(
-            time_real, voltage_real, pred_current_real, material_idx
-        )
+        endurance, metrics = self.physics.endurance(pred_current_real, voltage_real, dt_real, material)
+        threshold_times, total_energy = get_energy_consumption(time_real, voltage_real, pred_current_real)
         
         result = {
             'sequence_id': sequence_idx,
@@ -157,14 +152,13 @@ class RRAMEvaluator:
             'actual_switching_time': actual_switching_time,
             'total_energy': total_energy,
             'threshold_times': threshold_times,
-            'temperature': metrics['temperature'],
             'stable_index': stable_idx,
             'metrics': metrics,
             'time_real': time_real,
             'voltage_real': voltage_real,
             'true_current_real': true_current_real,
             'pred_current_real': pred_current_real,
-            'gap': gap
+            'state': state
         }
         
         return result
@@ -174,7 +168,6 @@ class RRAMEvaluator:
         total_switching_time = pos_result['actual_switching_time'] + neg_result['actual_switching_time']
         frequency = get_frequency(total_switching_time)
         total_energy = pos_result['total_energy'] + neg_result['total_energy']
-        avg_temperature = (pos_result['temperature'] + neg_result['temperature']) / 2
         
         merged_result = {
             'material': pos_result['material'],
@@ -186,28 +179,14 @@ class RRAMEvaluator:
             'neg_switching_time': neg_result['actual_switching_time'],
             'frequency': frequency,
             'total_energy': total_energy,
-            'avg_temperature': avg_temperature,
             'pos_result': pos_result,
             'neg_result': neg_result
         }
         
         return merged_result
 
-def get_energy_consumption(time_sequence, voltage_sequence, current_sequence, material_idx):
-    materials = ['HfO2', 'Al2O3', 'TiO2']
-    material = materials[material_idx]
-    
-    energy_thresholds = {
-        'HfO2': [0.1e-12, 1e-12, 5e-12],
-        'Al2O3': [0.1e-12, 1e-12, 5e-12],
-        'TiO2': [0.1e-12, 1e-12, 5e-12]
-    }
-    
-    if material not in energy_thresholds:
-        print(f"Unknown material: {material}, using HfO2 thresholds")
-        material = 'HfO2'
-        
-    threshold_times = {th: None for th in energy_thresholds[material]}
+def get_energy_consumption(time_sequence, voltage_sequence, current_sequence):
+    threshold_times = {th: None for th in ENERGY_THRESHOLDS}
 
     cumulative_energy = 0
     for i in range(1, len(time_sequence)):
@@ -215,100 +194,12 @@ def get_energy_consumption(time_sequence, voltage_sequence, current_sequence, ma
         avg_power = voltage_sequence[i] * current_sequence[i]
         energy_step = avg_power * delta_t
         cumulative_energy += energy_step
-        for threshold in energy_thresholds[material]:
+        for threshold in ENERGY_THRESHOLDS:
             if threshold_times[threshold] is None and cumulative_energy >= threshold:
                 threshold_times[threshold] = time_sequence[i]
     
     return threshold_times, cumulative_energy
 
-class EnduranceCalculator:
-    def __init__(self):
-        self.kb = 1.380649e-23        # Boltzmann constant [J/K]
-        self.q = 1.60217663e-19       # Elementary charge [C]
-        self.T0 = 273 + 25            # Ambient temperature [K]
-        self.a0 = 0.25e-9             # Atomic distance [m]
-        self.tox = 5e-9               # Oxide thickness [m]
-        self.f0 = 1e13                # Attempt frequency [Hz]
-        
-        self.material_params = {
-            'HfO2': {
-                'Us': RRAMPhysics.material_params['HfO2']['Eag'],  # Switching barrier = Eag
-                'Uf': 1.6,            # Failure barrier > Eag
-                'Cth': 2.17e-17,
-                'Tau_th': 3.5e-10      # Thermal time constant [s]
-            },
-            'Al2O3': {
-                'Us': RRAMPhysics.material_params['Al2O3']['Eag'],  # Switching barrier = Eag
-                'Uf': 1.6,             # Failure barrier > Eag  
-                'Cth': 2.12e-17,
-                'Tau_th': 3.5e-10
-            },
-            'TiO2': {
-                'Us': RRAMPhysics.material_params['TiO2']['Eag'],  # Switching barrier = Eag
-                'Uf': 2.3,            # Failure barrier > Eag
-                'Cth': 2.26e-17,
-                'Tau_th': 3.5e-10
-            }
-        }
-        self.current_material = 'HfO2'
-        
-    def calculate_temperature(self, current: float, voltage: float, dt: float) -> float:
-        params = self.material_params[self.current_material]
-        Cth = params['Cth']
-        tau_th = params['Tau_th']
-        
-        if isinstance(dt, torch.Tensor):
-            if dt.device.type != 'cpu':
-                dt = dt.cpu()
-            dt = dt.mean().item()
-        else:
-            dt = np.mean(dt)
-            
-        power = abs(voltage * current)
-        delta_T = dt * (power/Cth + self.T0/tau_th) / (1 + dt/tau_th) /100
-        return self.T0 + delta_T
-
-    def calculate_run_time(self, voltage: float, temperature: float) -> float:
-        Us_joules = self.material_params[self.current_material]['Us'] * self.q  # Convert eV to Joules
-        
-        return (2 * self.tox) / (self.f0 * self.a0) * \
-            np.exp(Us_joules / (self.kb * temperature)) * \
-            np.exp(-self.q * abs(voltage) * self.a0 / (2 * self.kb * temperature * self.tox))
-
-    def calculate_failure_time(self, voltage: float, temperature: float) -> float:
-        Uf_joules = self.material_params[self.current_material]['Uf'] * self.q  # Convert eV to Joules
-        
-        return (2 * self.tox) / (self.f0 * self.a0) * \
-            np.exp(Uf_joules / (self.kb * temperature)) * \
-            np.exp(-self.q * abs(voltage) * self.a0 / (2 * self.kb * temperature * self.tox))
-
-    def calculate_endurance(self, current: float, voltage: float, time_step: float,
-                          material: str = 'HfO2') -> Tuple[float, Dict]:
-        self.update_material(material)
-        
-        temperature = self.calculate_temperature(current, voltage, time_step)
-        ts = self.calculate_run_time(voltage, temperature)
-        tf = self.calculate_failure_time(voltage, temperature)
-        endurance = tf / ts
-
-        metrics = {
-            'temperature': temperature,
-            'run_time': ts,
-            'failure_time': tf,
-            'endurance_cycles': endurance,
-            'current': current,
-            'voltage': voltage,
-            'run_energy': abs(current * voltage * ts),
-            'failure_energy': abs(current * voltage * tf)
-        }
-
-        return endurance, metrics
-
-    def update_material(self, material: str):
-        if material not in self.material_params:
-            raise ValueError(f"Unknown material: {material}")
-        self.current_material = material
-        
 def find_index(array, threshold, is_increasing):
     if is_increasing:
         indices = np.where(array >= threshold)[0]

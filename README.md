@@ -20,7 +20,7 @@ PIGen integrates two components to bridge physical simulation and design optimiz
 
 **2. Generative Parameter Recommendation (CVAE)**: A Conditional Variational Autoencoder trained on PINN simulation data that generates candidate parameter sets (material, voltages, pulse width) optimized for user-specified performance targets. Candidates are validated through the PINN model, and multi-objective Pareto analysis identifies optimal trade-offs between energy, latency, and endurance.
 
-The training framework in `core/` is shared by every device; each memory device contributes its physics core in its own package (currently `rram/`, see [Adding a new memory device](#adding-a-new-memory-device)).
+The training framework and the CVAE in `core/` are shared by every device; each memory device contributes its physics core in its own package (currently `rram/`, see [Adding a new memory device](#adding-a-new-memory-device)).
 
 **Supported ReRAM materials**: HfO2, Al2O3, TiO2
 
@@ -40,11 +40,13 @@ pigen/
 │   ├── metrics.py           # Final-current and t90 accuracies, log-time-weighted MSE
 │   ├── plotting.py          # State and current waveform plots
 │   ├── checkpoint.py        # Optimizers and checkpoint I/O
-│   └── cache.py             # Physics simulation cache
+│   ├── cache.py             # Physics simulation cache
+│   └── cvae/                # CVAE parameter recommendation, device evaluation with the PINN, Pareto front
 ├── rram/                    # ReRAM device
-│   ├── physics.py           # RRAMPhysics: material parameters, gap dynamics and Joule heating
-│   └── cvae/                # CVAE parameter recommendation, endurance/energy evaluation, Pareto front
+│   ├── physics.py           # RRAMPhysics: material parameters, gap dynamics, Joule heating, CVAE design space
+│   └── endurance.py         # Endurance model (switching vs. failure barrier at the pulse's peak temperature)
 ├── train.py                 # Train one model
+├── generate.py              # Train the CVAE, recommend parameters and plot the Pareto front
 ├── compare.py               # Launch PDE vs no-PDE runs (locally or on SLURM) and summarize them
 ├── environment.yaml         # Conda environment
 ├── LICENSE
@@ -151,26 +153,26 @@ With `--setup`, jobs run `python` from the environment the setup commands activa
 
 ### 3. Training the CVAE Model (Optional)
 
-If retraining the CVAE with a new PINN checkpoint:
+If retraining the CVAE with a new PINN checkpoint (`--physics` selects the device, `rram` by default):
 
 ```bash
-python -m rram.cvae.run_gen --train_cvae \
-                            --model_path checkpoints/best_logt_mse_checkpoint.pth \
-                            --data_path data/rram_ICCAD.mat \
-                            --cvae_model_path recommendation_results/cvae_model.pth \
-                            --dataset_path recommendation_results/rram_cvae_dataset.pt
+python generate.py --train_cvae \
+                   --model_path checkpoints/best_logt_mse_checkpoint.pth \
+                   --data_path data/rram_ICCAD.mat \
+                   --cvae_model_path recommendation_results/cvae_model.pth \
+                   --dataset_path recommendation_results/cvae_dataset.pt
 ```
 
 ### 4. Generating Parameter Recommendations
 
 ```bash
-python -m rram.cvae.run_gen --model_path checkpoints/best_logt_mse_checkpoint.pth \
-                            --data_path data/rram_ICCAD.mat \
-                            --cvae_model_path recommendation_results/cvae_model.pth \
-                            --dataset_path recommendation_results/rram_cvae_dataset.pt \
-                            --target_endurance 1e7 \
-                            --target_switching_time 5e-9 \
-                            --target_energy 1e-12
+python generate.py --model_path checkpoints/best_logt_mse_checkpoint.pth \
+                   --data_path data/rram_ICCAD.mat \
+                   --cvae_model_path recommendation_results/cvae_model.pth \
+                   --dataset_path recommendation_results/cvae_dataset.pt \
+                   --target_endurance 1e5 \
+                   --target_switching_time 5e-9 \
+                   --target_energy 1e-12
 ```
 
 The system generates 4 diverse recommendations optimized for different objectives (overall performance, endurance, energy efficiency, switching speed). Results are saved to `recommendation_results/recommendations.json`.
@@ -178,20 +180,20 @@ The system generates 4 diverse recommendations optimized for different objective
 ### 5. Generating Pareto Front Plots
 
 ```bash
-python -m rram.cvae.run_gen --generate_pareto \
-                            --model_path checkpoints/best_logt_mse_checkpoint.pth \
-                            --data_path data/rram_ICCAD.mat \
-                            --output_dir recommendation_results \
-                            --target_switching_time 10e-9 \
-                            --target_energy 5e-10 \
-                            --target_endurance 1e6
+python generate.py --generate_pareto \
+                   --model_path checkpoints/best_logt_mse_checkpoint.pth \
+                   --data_path data/rram_ICCAD.mat \
+                   --output_dir recommendation_results \
+                   --target_switching_time 10e-9 \
+                   --target_energy 5e-10 \
+                   --target_endurance 1e5
 ```
 
-Generates `rram_pareto_front.png` and `rram_pareto_front.pdf` visualizing energy vs. latency trade-offs across materials, with Pareto-optimal points highlighted.
+Generates `<physics>_pareto_front.png` and `.pdf` (for ReRAM, `rram_pareto_front.png`) visualizing energy vs. latency trade-offs across materials, with Pareto-optimal points highlighted.
 
 ## Adding a New Memory Device
 
-The models, training loop, metrics and `compare.py` only talk to a device through `core.physics.DevicePhysics`. To support another device (for example phase-change memory):
+The models, training loop, metrics, CVAE, `compare.py` and `generate.py` only talk to a device through `core.physics.DevicePhysics`. To support another device (for example phase-change memory):
 
 1. Create a package next to `rram/`, e.g. `pcm/`.
 2. In `pcm/physics.py`, subclass `DevicePhysics`:
@@ -201,10 +203,13 @@ The models, training loop, metrics and `compare.py` only talk to a device throug
    - `initial_time`: time before the first sample, used to compute the first time step
    - `simulate(dt, voltage, current, material)`: physical state at every time step (1-D tensors in physical units)
    - `normalize_state(state)`: map the physical state onto [-1, 1]
+   - For parameter recommendation only (`generate.py`):
+     - `design_space`: per material, the voltage ranges of the positive and negative write pulses, e.g. `{'HfO2': {'pos': (1.5, 2.0), 'neg': (-2.0, -1.5)}}`
+     - `endurance(current, voltage, dt, material)`: endurance [cycles] of one write pulse and a dict of device-specific metrics
 3. Export it in `pcm/__init__.py` as `from .physics import PCMPhysics as Physics`.
-4. Train with `python train.py --physics pcm ...` or `python compare.py run --physics pcm ...`.
+4. Train with `python train.py --physics pcm ...` or `python compare.py run --physics pcm ...`, then recommend parameters with `python generate.py --physics pcm ...`.
 
-`rram/physics.py` is a complete reference implementation.
+`rram/physics.py` (with `rram/endurance.py`) is a complete reference implementation.
 
 ## Citation
 

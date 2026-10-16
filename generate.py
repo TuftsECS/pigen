@@ -1,17 +1,19 @@
 import argparse
+import importlib
 import json
 import os
 import torch
 
-from .generative_model import RRAMParameterRecommender, train_cvae
-from .metric_eval import RRAMEvaluator
-from .pareto_front import generate_pareto_plot
+from core.cvae.evaluator import DeviceEvaluator
+from core.cvae.generative_model import ParameterRecommender, train_cvae
+from core.cvae.pareto_front import generate_pareto_plot
 
 def main():
-    parser = argparse.ArgumentParser(description='RRAM CVAE Model and Pareto Front Generation Tool')
+    parser = argparse.ArgumentParser(description='CVAE parameter recommendation and Pareto front generation for one memory device.')
 
+    parser.add_argument('--physics', type=str, default='rram', help='Device package providing the physics core')
     parser.add_argument('--model_path', type=str, required=True, help='Trained PINN checkpoint from train.py (e.g. checkpoints/best_logt_mse_checkpoint.pth)')
-    parser.add_argument('--data_path', type=str, required=True, help='Path to the RRAM dataset (.mat)')
+    parser.add_argument('--data_path', type=str, required=True, help='Dataset (.mat)')
     parser.add_argument('--output_dir', type=str, default='recommendation_results', help='Directory to save outputs')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for computation (cuda/cpu)')
     parser.add_argument('--generate_pareto', action='store_true', help='Generate and save the Pareto front plot.')
@@ -20,13 +22,13 @@ def main():
     cvae_group.add_argument('--train_cvae', action='store_true', help='Train a new CVAE model')
     cvae_group.add_argument('--create_new_dataset', action='store_true', help='Create a new dataset for CVAE training')
     cvae_group.add_argument('--cvae_model_path', type=str, default='recommendation_results/cvae_model.pth', help='Path to CVAE model')
-    cvae_group.add_argument('--dataset_path', type=str, default='recommendation_results/rram_cvae_dataset.pt', help='Path to CVAE dataset')
+    cvae_group.add_argument('--dataset_path', type=str, default='recommendation_results/cvae_dataset.pt', help='Path to CVAE dataset')
     cvae_group.add_argument('--cvae_epochs', type=int, default=3000, help='Number of epochs for CVAE training')
     cvae_group.add_argument('--early_stopping_patience', type=int, default=100, help='Patience for early stopping (epochs)')
     cvae_group.add_argument('--early_stopping_delta', type=float, default=1e-5, help='Minimum change in loss to qualify as improvement for early stopping')
     
     rec_group = parser.add_argument_group('Recommendation and Pareto Plot Parameters')
-    rec_group.add_argument('--target_endurance', type=float, default=1e6, help='Target endurance (cycles)')
+    rec_group.add_argument('--target_endurance', type=float, default=1e5, help='Target endurance (cycles)')
     rec_group.add_argument('--target_switching_time', type=float, default=10e-9, help='Target switching time (s), default 10ns')
     rec_group.add_argument('--target_energy', type=float, default=5e-10, help='Target energy consumption (J)')
     rec_group.add_argument('--min_pulse_width', type=float, default=1e-9, help='Minimum pulse width for recommendations (default: 1ns)')
@@ -37,12 +39,16 @@ def main():
     rec_group.add_argument('--num_sample_points', type=int, default=50, help='Number of sample points per material for Pareto plot (max 100)')
     
     args = parser.parse_args()
+    physics = importlib.import_module(args.physics).Physics()
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    for directory in (args.output_dir, os.path.dirname(args.cvae_model_path), os.path.dirname(args.dataset_path)):
+        if directory:
+            os.makedirs(directory, exist_ok=True)
 
     if args.generate_pareto:
         print("--- Generating Pareto Front Plot ---")
         generate_pareto_plot(
+            physics,
             model_path=args.model_path,
             data_path=args.data_path,
             output_dir=args.output_dir,
@@ -60,7 +66,8 @@ def main():
     else:
         print("--- Running CVAE Parameter Recommendation ---")
         device = torch.device(args.device)
-        evaluator = RRAMEvaluator(
+        evaluator = DeviceEvaluator(
+            physics,
             model_path=args.model_path,
             data_path=args.data_path,
             output_dir=args.output_dir,
@@ -82,7 +89,7 @@ def main():
             print(f"CVAE model training complete. Model saved to {args.cvae_model_path}")
 
         print("\nRecommending parameters for target performance...")
-        recommender = RRAMParameterRecommender(
+        recommender = ParameterRecommender(
             args.cvae_model_path,
             evaluator,
             dataset_path=args.dataset_path,

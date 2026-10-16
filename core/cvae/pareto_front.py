@@ -2,13 +2,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import pandas as pd
-from matplotlib.ticker import ScalarFormatter
 import torch
 import os
 import matplotlib.ticker as ticker
 
-from .generative_model import RRAMParameterRecommender
-from .metric_eval import RRAMEvaluator
+from .generative_model import ParameterRecommender
+from .evaluator import DeviceEvaluator
 plt.rcParams.update({
     'font.family': 'sans-serif',
     'font.sans-serif': ['DejaVu Sans', 'Helvetica', 'Liberation Sans', 'FreeSans', 'sans-serif'],
@@ -20,22 +19,22 @@ plt.rcParams.update({
     'legend.fontsize': 15
 })
 
+# Marker colors, assigned to the device's materials in order (for RRAM: HfO2, Al2O3, TiO2).
+MATERIAL_PALETTE = [
+    {'fill': '#FBD178', 'edge': '#EE8227'},
+    {'fill': '#F9C3BF', 'edge': '#EB716B'},
+    {'fill': '#BFE4EE', 'edge': '#79ADD6'},
+    {'fill': '#C7E9C0', 'edge': '#41AB5D'},
+    {'fill': '#DADAEB', 'edge': '#807DBA'},
+]
 COLORS = {
-    'HfO2': {'fill': '#FBD178', 'edge': '#EE8227'},
-    'TiO2': {'fill': '#BFE4EE', 'edge': '#79ADD6'},
-    'Al2O3': {'fill': '#F9C3BF', 'edge': '#EB716B'},
     'pareto': '#556B2F',
     'target': '#1E803D'
 }
-ENERGY_MIN_VALID = 10       # pJ
-ENERGY_MAX_VALID = 5000     # pJ
-TIME_MIN_VALID = 0.1e-9     # s (0.1 ns)
-TIME_MAX_VALID = 100e-9     # s (100 ns)
-ENDURANCE_MIN_VALID = 1e3   # cycles
-ENDURANCE_MAX_VALID = 1e12  # cycles
+AXIS_MARGIN = 1.3  # Log-axis padding factor around the data points and targets
 
-def validate_data(df):
-    """Clean and validate data to prevent plotting issues, using switching time."""
+def validate_data(df, default_material):
+    """Drop points that cannot be drawn on log axes (non-finite or non-positive values)."""
     df_clean = df.copy()
     if 'total_switching_time' not in df_clean.columns:
         print("Error: 'total_switching_time' column not found in DataFrame for validation.")
@@ -46,15 +45,9 @@ def validate_data(df):
         df_clean['is_other_recommendation'] = df_clean['is_other_recommendation'].fillna(False)
     
     df_clean = df_clean[
-        (df_clean['energy'] >= ENERGY_MIN_VALID) & 
-        (df_clean['energy'] <= ENERGY_MAX_VALID) &
-        (df_clean['total_switching_time'] >= TIME_MIN_VALID) & 
-        (df_clean['total_switching_time'] <= TIME_MAX_VALID) & 
-        (df_clean['endurance'] >= ENDURANCE_MIN_VALID) & 
-        (df_clean['endurance'] <= ENDURANCE_MAX_VALID) &
-        np.isfinite(df_clean['energy']) &
-        np.isfinite(df_clean['total_switching_time']) &
-        np.isfinite(df_clean['endurance'])
+        np.isfinite(df_clean['energy']) & (df_clean['energy'] > 0) &
+        np.isfinite(df_clean['total_switching_time']) & (df_clean['total_switching_time'] > 0) &
+        np.isfinite(df_clean['endurance']) & (df_clean['endurance'] > 0)
     ]
     
     removed_count = len(df) - len(df_clean)
@@ -64,7 +57,7 @@ def validate_data(df):
     if len(df_clean) == 0:
         print("Error: No valid data points for plotting")
         return pd.DataFrame({
-            'material': ['HfO2'],
+            'material': [default_material],
             'energy': [1000],
             'total_switching_time': [10e-9],
             'endurance': [1e6],
@@ -75,55 +68,11 @@ def validate_data(df):
     return df_clean
 
 def get_safe_axis_limits(df, target_energy_pJ, target_switching_time_ns):
-    """Calculate safe axis limits for energy and switching time."""
-    DEFAULT_ENERGY_MIN = 150
-    DEFAULT_ENERGY_MAX = 2000
-    DEFAULT_TIME_MIN_NS = 1
-    DEFAULT_TIME_MAX_NS = 50 
-    
-    try:
-        if 'switching_time_ns' not in df.columns:
-             print("Warning: 'switching_time_ns' not found in DataFrame for axis limits. Using defaults.")
-             return DEFAULT_ENERGY_MIN, DEFAULT_ENERGY_MAX, DEFAULT_TIME_MIN_NS, DEFAULT_TIME_MAX_NS
-        if len(df) > 0:
-            x_min = max(np.percentile(df['energy'], 1), DEFAULT_ENERGY_MIN / 2)
-            x_max = min(np.percentile(df['energy'], 99) * 1.2, DEFAULT_ENERGY_MAX * 2)
-            y_min = max(np.percentile(df['switching_time_ns'], 1) / 1.2, DEFAULT_TIME_MIN_NS / 2)
-            y_max = min(np.percentile(df['switching_time_ns'], 99) * 1.2, DEFAULT_TIME_MAX_NS * 2)
-            
-            if target_energy_pJ is not None:
-                x_min = min(x_min, target_energy_pJ * 0.8)
-                x_max = max(x_max, target_energy_pJ * 1.2)
-            
-            if target_switching_time_ns is not None:
-                y_min = min(y_min, target_switching_time_ns * 0.8)
-                y_max = max(y_max, target_switching_time_ns * 1.2)
-            
-            x_min = max(x_min, DEFAULT_ENERGY_MIN)
-            x_max = min(x_max, DEFAULT_ENERGY_MAX)
-            y_min = max(y_min, DEFAULT_TIME_MIN_NS)
-            y_max = min(y_max, DEFAULT_TIME_MAX_NS)
-            
-            if x_max / x_min < 2:
-                x_min = max(DEFAULT_ENERGY_MIN / 2, x_min / 2)
-                x_max = min(DEFAULT_ENERGY_MAX * 2, x_max * 2)
-            
-            if y_max <= y_min:
-                y_max = y_min * 2
-
-            if y_max / y_min < 2:
-                 y_min = max(DEFAULT_TIME_MIN_NS / 2, y_min / 2)
-                 y_max = min(DEFAULT_TIME_MAX_NS * 2, y_max * 2)
-                 if y_max <= y_min:
-                     y_max = y_min * 1.1
-
-
-            return x_min, x_max, y_min, y_max
-            
-    except Exception as e:
-        print(f"Error calculating axis limits: {e}")
-    
-    return DEFAULT_ENERGY_MIN, DEFAULT_ENERGY_MAX, DEFAULT_TIME_MIN_NS, DEFAULT_TIME_MAX_NS
+    """Log-axis limits that contain every point and both targets, padded by AXIS_MARGIN."""
+    energy = np.append(df['energy'].to_numpy(), target_energy_pJ)
+    time_ns = np.append(df['switching_time_ns'].to_numpy(), target_switching_time_ns)
+    return (energy.min() / AXIS_MARGIN, energy.max() * AXIS_MARGIN,
+            time_ns.min() / AXIS_MARGIN, time_ns.max() * AXIS_MARGIN)
 
 def calculate_size_for_endurance(endurance):
     """Calculate marker size based on endurance."""
@@ -131,25 +80,27 @@ def calculate_size_for_endurance(endurance):
     size_factor = 8
     return size_factor * (log_endurance ** 2.2)
 
-def generate_pareto_plot(model_path='checkpoints/pinn_sparse.pth',
-                        data_path='data/rram_data.mat',
+def generate_pareto_plot(physics,
+                        data_path,
+                        model_path='checkpoints/best_logt_mse_checkpoint.pth',
                         output_dir='recommendation_results',
                         cvae_model_path='recommendation_results/cvae_model.pth',
-                        dataset_path='recommendation_results/rram_cvae_dataset.pt',
+                        dataset_path='recommendation_results/cvae_dataset.pt',
                         target_switching_time=10e-9, # s, default 10 ns
                         target_energy=5e-10,  # J, equivalent to 500 pJ
-                        target_endurance=1e6,  # cycles
+                        target_endurance=1e5,  # cycles
                         num_sample_points=50,
                         energy_penalty_factor=3.0,
                         max_energy_error_ratio=1.0,
                         min_pulse_width=1e-9,
                         diverse_candidates=40):
     """
-    Generate Pareto front plot using the real RRAM model
+    Generate the energy-latency Pareto front plot of one device, evaluated with its trained PINN
     
     Parameters:
-        model_path: Path to trained RRAM model
-        data_path: Path to RRAM dataset
+        physics: Device physics core (a core.physics.DevicePhysics), e.g. rram.Physics()
+        model_path: Path to the trained PINN checkpoint
+        data_path: Path to the device dataset
         output_dir: Output directory
         cvae_model_path: Path to CVAE model
         dataset_path: Path to CVAE dataset
@@ -164,22 +115,23 @@ def generate_pareto_plot(model_path='checkpoints/pinn_sparse.pth',
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    print("Initializing RRAM evaluator...")
+    print("Initializing device evaluator...")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     try:
-        evaluator = RRAMEvaluator(
+        evaluator = DeviceEvaluator(
+            physics,
             model_path=model_path,
             data_path=data_path,
             output_dir=output_dir,
             device=device
         )
     except Exception as e:
-        print(f"Error initializing RRAM evaluator: {e}")
+        print(f"Error initializing device evaluator: {e}")
         return None, None, None
     
     print("Initializing parameter recommender...")
     try:
-        recommender = RRAMParameterRecommender(
+        recommender = ParameterRecommender(
             cvae_model_path, 
             evaluator,
             dataset_path=dataset_path,
@@ -288,7 +240,7 @@ def generate_pareto_plot(model_path='checkpoints/pinn_sparse.pth',
             print(f"Error adding recommendation {i+1}: {e}")
     
     df = pd.DataFrame(data)
-    df = validate_data(df)
+    df = validate_data(df, materials[0])
     if 'total_switching_time' in df.columns:
         df['switching_time_ns'] = df['total_switching_time'] * 1e9
     else:
@@ -301,6 +253,7 @@ def generate_pareto_plot(model_path='checkpoints/pinn_sparse.pth',
     target_switching_time_ns = target_switching_time * 1e9
     
     try:
+        colors = {m: MATERIAL_PALETTE[i % len(MATERIAL_PALETTE)] for i, m in enumerate(materials)}
         fig = plt.figure(figsize=(8, 6), dpi=300)
         ax = fig.add_axes([0.12, 0.12, 0.85, 0.7])
         for material in materials:
@@ -315,8 +268,8 @@ def generate_pareto_plot(model_path='checkpoints/pinn_sparse.pth',
                     normal_points['energy'], 
                     normal_points['switching_time_ns'],
                     s=sizes,
-                    color=COLORS[material]['fill'],
-                    edgecolor=COLORS[material]['edge'],
+                    color=colors[material]['fill'],
+                    edgecolor=colors[material]['edge'],
                     alpha=0.7,
                     linewidth=1.5,
                     label=material
@@ -330,8 +283,8 @@ def generate_pareto_plot(model_path='checkpoints/pinn_sparse.pth',
                     rec_points['energy'], 
                     rec_points['switching_time_ns'],
                     s=sizes,
-                    color=COLORS[material]['fill'],
-                    edgecolor=COLORS[material]['edge'],
+                    color=colors[material]['fill'],
+                    edgecolor=colors[material]['edge'],
                     alpha=0.9,
                     linewidth=2,
                     marker='*'
@@ -424,22 +377,13 @@ def generate_pareto_plot(model_path='checkpoints/pinn_sparse.pth',
             )
         except Exception as e:
             print(f"Warning: Could not add target labels: {e}")
-        
-        for axis in [ax.xaxis, ax.yaxis]:
-            formatter = ScalarFormatter()
-            formatter.set_scientific(True)
-            formatter.set_powerlimits((-1, 1))
-            axis.set_major_formatter(formatter)
-        
+
         ax.grid(True, linestyle='--', alpha=0.3)
         
         legend_elements = [
-            Line2D([0], [0], marker='o', color='w', label='HfO2', 
-                   markerfacecolor=COLORS['HfO2']['fill'], markeredgecolor=COLORS['HfO2']['edge'], markersize=12),
-            Line2D([0], [0], marker='o', color='w', label='TiO2', 
-                   markerfacecolor=COLORS['TiO2']['fill'], markeredgecolor=COLORS['TiO2']['edge'], markersize=12),
-            Line2D([0], [0], marker='o', color='w', label='Al2O3', 
-                   markerfacecolor=COLORS['Al2O3']['fill'], markeredgecolor=COLORS['Al2O3']['edge'], markersize=12),
+            *[Line2D([0], [0], marker='o', color='w', label=material,
+                     markerfacecolor=colors[material]['fill'], markeredgecolor=colors[material]['edge'], markersize=12)
+              for material in materials],
             Line2D([0], [0], marker='*', color='w', markerfacecolor='gray', markersize=15, label='Best Overall', linestyle='None'),
         ]
         
@@ -457,8 +401,12 @@ def generate_pareto_plot(model_path='checkpoints/pinn_sparse.pth',
         ax_endurance.set_xlim(0, 1)
         ax_endurance.set_ylim(0, 1)
         ax_endurance.set_axis_off()
-        endurance_values = [1e5, 1e6, 1e7, 1e8]
-        endurance_labels = ['10⁵', '10⁶', '10⁷', '10⁸']
+        # Up to four whole decades spanning the plotted endurance range.
+        log_endurance = np.log10(df['endurance'])
+        low, high = int(np.floor(log_endurance.min())), int(np.ceil(log_endurance.max()))
+        decades = np.unique(np.round(np.linspace(low, high, min(4, high - low + 1)))).astype(int)
+        endurance_values = [10.0 ** d for d in decades]
+        endurance_labels = [f'$10^{{{d}}}$' for d in decades]
         x_positions = np.linspace(0.1, 0.9, len(endurance_values))
         
         for x, value, label in zip(x_positions, endurance_values, endurance_labels):
@@ -467,8 +415,9 @@ def generate_pareto_plot(model_path='checkpoints/pinn_sparse.pth',
             ax_endurance.text(x, 0.001, label, ha='center', va='center', fontsize=18)
         
         try:
-            png_path = os.path.join(output_dir, 'rram_pareto_front.png')
-            pdf_path = os.path.join(output_dir, 'rram_pareto_front.pdf')
+            device_name = type(physics).__module__.split('.')[0]
+            png_path = os.path.join(output_dir, f'{device_name}_pareto_front.png')
+            pdf_path = os.path.join(output_dir, f'{device_name}_pareto_front.pdf')
             
             plt.savefig(png_path, dpi=200, bbox_inches='tight')
             plt.savefig(pdf_path, format='pdf', bbox_inches='tight')

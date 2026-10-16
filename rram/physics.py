@@ -2,6 +2,7 @@ import torch
 from torch import jit
 
 from core.physics import DevicePhysics
+from .endurance import EnduranceCalculator
 
 
 class RRAMPhysics(DevicePhysics):
@@ -9,8 +10,14 @@ class RRAMPhysics(DevicePhysics):
 
     state_name = 'gap'
     materials = ('HfO2', 'Al2O3', 'TiO2')
-    split_voltages = {'HfO2': (1.27, -1.32), 'Al2O3': (1.0, -1.18), 'TiO2': (1.54, -1.45)}
+    split_voltages = {'HfO2': (1.5, -1.5), 'Al2O3': (1.38, -1.38), 'TiO2': (1.65, -1.65)}
     initial_time = 7e-12
+    # SET/RESET pulses from each material's switching threshold to 2 V.
+    design_space = {
+        'HfO2': {'pos': (1.5, 2.0), 'neg': (-2.0, -1.5)},
+        'Al2O3': {'pos': (1.38, 2.0), 'neg': (-2.0, -1.38)},
+        'TiO2': {'pos': (1.65, 2.0), 'neg': (-2.0, -1.65)},
+    }
 
     kb = 1.380649e-23       # Boltzmann constant [J/K]
     q = 1.60217663e-19      # Elementary charge [C]
@@ -19,32 +26,37 @@ class RRAMPhysics(DevicePhysics):
     a0 = 0.25e-9            # Atomic distance [m]
     gap_min = 0.1e-9        # Minimum gap [m]
     gap_max = 1.7e-9        # Maximum gap [m]
-    Tau_th = 2.3e-10        # Effective thermal time constant [s]
+    Tau_th = 3.5e-10        # Effective thermal time constant [s]
     g1 = 1e-9               # Length scale for gamma calculation [m]
-    beta = 1.25             # Field enhancement coefficient
-    gamma0 = {'pos': 15, 'neg': 8.5}    # Field enhancement factor, by voltage polarity
-    Vel0 = {'pos': 120, 'neg': 150}     # Base velocity [m/s], by voltage polarity
+    beta = 0.3              # Field enhancement coefficient
+    gamma0 = 4.0            # Field enhancement factor
+    Vel0 = 100              # Base velocity [m/s]
     material_params = {
-        'HfO2': {'Eag': 1.241, 'Ear': 1.24, 'Cth': 3.05e-18},
-        'Al2O3': {'Eag': 1.001, 'Ear': 1.0, 'Cth': 2.98e-18},
-        'TiO2': {'Eag': 1.501, 'Ear': 1.50, 'Cth': 3.18e-18},
+        'HfO2': {'Eag': 1.241, 'Ear': 1.24, 'Cth': 2.17e-17},
+        'Al2O3': {'Eag': 1.001, 'Ear': 1.0, 'Cth': 2.12e-17},
+        'TiO2': {'Eag': 1.701, 'Ear': 1.70, 'Cth': 2.26e-17},
     }
+
+    def __init__(self):
+        self.endurance_model = EnduranceCalculator({m: p['Eag'] for m, p in self.material_params.items()})
 
     def simulate(self, dt, voltage, current, material):
         params = self.material_params[material]
-        polarity = 'pos' if voltage[-1] > 0 else 'neg'
         as_tensor = lambda value: torch.tensor(value, device=dt.device, dtype=dt.dtype)
         gap, _ = simulate_rram(
             dt, voltage, current,
-            as_tensor(self.gamma0[polarity]), as_tensor(self.beta), as_tensor(self.g1), as_tensor(self.q),
+            as_tensor(self.gamma0), as_tensor(self.beta), as_tensor(self.g1), as_tensor(self.q),
             as_tensor(params['Eag']), as_tensor(self.kb), as_tensor(self.a0), as_tensor(self.tox),
-            as_tensor(params['Ear']), as_tensor(self.Vel0[polarity]), as_tensor(self.gap_min),
+            as_tensor(params['Ear']), as_tensor(self.Vel0), as_tensor(self.gap_min),
             as_tensor(self.gap_max), as_tensor(self.T0), as_tensor(params['Cth']), as_tensor(self.Tau_th),
         )
         return gap
 
     def normalize_state(self, gap):
         return -1 + (gap - self.gap_min) * (2 / (self.gap_max - self.gap_min))
+
+    def endurance(self, current, voltage, dt, material):
+        return self.endurance_model.calculate_endurance(current, voltage, dt, material)
 
 
 @jit.script

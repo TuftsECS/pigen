@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 import torch
 import torch.nn.functional as F
@@ -71,7 +72,7 @@ def setup_logger(save_dir: str, exp_name: str) -> logging.Logger:
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
     
-    console_handler = logging.StreamHandler()
+    console_handler = logging.StreamHandler(sys.stdout)
     console_formatter = logging.Formatter('%(message)s')
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
