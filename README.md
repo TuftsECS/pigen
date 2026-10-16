@@ -71,7 +71,7 @@ conda activate pigen
 
 ### Data Preparation
 
-PIGen expects a MATLAB `.mat` file of switching sequences, for ReRAM generated from the [Stanford RRAM Model](https://nano.stanford.edu/downloads/stanford-rram-model). Place datasets under `data/` and pass them with `--data_path` (`--data` for `compare.py`); without it, the scripts read the shared copy on the Tufts HPC cluster, `/cluster/tufts/donatolab/shared/datasets/pigen/rram_ICCAD.mat`.
+PIGen expects a MATLAB `.mat` file of switching sequences, for ReRAM generated from the [Stanford RRAM Model](https://nano.stanford.edu/downloads/stanford-rram-model). Place datasets under `data/` and pass them with `--data_path` (`--data` for `compare.py`); without it, the scripts read the shared copy on the Tufts HPC cluster, `/cluster/tufts/donatolab/shared/datasets/pigen/rram.mat`.
 
 Each sequence `i` should have the following keys:
 
@@ -91,7 +91,7 @@ Run all commands from the repository root.
 ### 1. Training the PINN Model
 
 ```bash
-python train.py --data_path data/rram_ICCAD.mat --exp_name my_experiment --use_pde --voltage_stride 0.2
+python train.py --data_path data/rram.mat --exp_name my_experiment --use_pde --voltage_stride 0.2
 ```
 
 **Key arguments**:
@@ -134,14 +134,14 @@ The best checkpoint for each tracked validation metric is saved to `<save_dir>/b
 
 ```bash
 # Preview the runs and the generated job script
-python compare.py run --data data/rram_ICCAD.mat --slurm --dry_run
+python compare.py run --data data/rram.mat --slurm --dry_run
 
 # Submit to SLURM (cluster-specific settings are options; "--setup" runs before each training)
-python compare.py run --data data/rram_ICCAD.mat --slurm --partition gpu --gres gpu:a100:1 \
+python compare.py run --data data/rram.mat --slurm --partition gpu --gres gpu:a100:1 \
                       --setup "module load anaconda; source activate pigen" --out results/compare
 
 # A smaller study; arguments after "--" are passed to every train.py call
-python compare.py run --data data/rram_ICCAD.mat --splits full stride_0.4 --seeds 42 43 -- --epochs 500
+python compare.py run --data data/rram.mat --splits full stride_0.4 --seeds 42 43 -- --epochs 500
 
 # Paired PDE vs no-PDE summary of finished runs (best validation epoch of each run)
 python compare.py summarize --out results/compare
@@ -158,7 +158,7 @@ If retraining the CVAE with a new PINN checkpoint (`--physics` selects the devic
 ```bash
 python generate.py --train_cvae \
                    --model_path checkpoints/best_logt_mse_checkpoint.pth \
-                   --data_path data/rram_ICCAD.mat \
+                   --data_path data/rram.mat \
                    --cvae_model_path recommendation_results/cvae_model.pth \
                    --dataset_path recommendation_results/cvae_dataset.pt
 ```
@@ -167,7 +167,7 @@ python generate.py --train_cvae \
 
 ```bash
 python generate.py --model_path checkpoints/best_logt_mse_checkpoint.pth \
-                   --data_path data/rram_ICCAD.mat \
+                   --data_path data/rram.mat \
                    --cvae_model_path recommendation_results/cvae_model.pth \
                    --dataset_path recommendation_results/cvae_dataset.pt \
                    --target_endurance 1e5 \
@@ -182,7 +182,7 @@ The system generates 4 diverse recommendations optimized for different objective
 ```bash
 python generate.py --generate_pareto \
                    --model_path checkpoints/best_logt_mse_checkpoint.pth \
-                   --data_path data/rram_ICCAD.mat \
+                   --data_path data/rram.mat \
                    --output_dir recommendation_results \
                    --target_switching_time 10e-9 \
                    --target_energy 5e-10 \

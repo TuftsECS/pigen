@@ -16,10 +16,10 @@ CHECKPOINT_METRICS = [
     ('final_current_accuracy_5', True),
     ('t90_accuracy', True),
 ]
-# Start learning rates validated on rram_ICCAD, used when --learning_rate_* is not given.
+# Start learning rates validated on rram.mat, used when --learning_rate_* is not given.
 DEFAULT_LR = {'pde': 1e-3, 'no_pde': 3e-4}
 # Shared copy of the dataset on the Tufts HPC cluster, used when no dataset is given.
-DEFAULT_DATA_PATH = '/cluster/tufts/donatolab/shared/datasets/pigen/rram_ICCAD.mat'
+DEFAULT_DATA_PATH = '/cluster/tufts/donatolab/shared/datasets/pigen/rram.mat'
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train the state PINN and current readout of one memory device.')

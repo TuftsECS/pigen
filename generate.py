@@ -9,7 +9,7 @@ from core.cvae.generative_model import ParameterRecommender, train_cvae
 from core.cvae.pareto_front import generate_pareto_plot
 
 # Shared copy of the dataset on the Tufts HPC cluster, used when no dataset is given.
-DEFAULT_DATA_PATH = '/cluster/tufts/donatolab/shared/datasets/pigen/rram_ICCAD.mat'
+DEFAULT_DATA_PATH = '/cluster/tufts/donatolab/shared/datasets/pigen/rram.mat'
 
 def main():
     parser = argparse.ArgumentParser(description='CVAE parameter recommendation and Pareto front generation for one memory device.')

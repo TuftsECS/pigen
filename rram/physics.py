@@ -10,9 +10,9 @@ class RRAMPhysics(DevicePhysics):
 
     state_name = 'gap'
     materials = ('HfO2', 'Al2O3', 'TiO2')
-    split_voltages = {'HfO2': (1.5, -1.5), 'Al2O3': (1.38, -1.38), 'TiO2': (1.65, -1.65)}
+    split_voltages = {'HfO2': (1.27, -1.32), 'Al2O3': (1.0, -1.18), 'TiO2': (1.54, -1.45)}
     initial_time = 7e-12
-    # SET/RESET pulses from each material's switching threshold to 2 V.
+    # SET/RESET pulse voltages the CVAE designs over.
     design_space = {
         'HfO2': {'pos': (1.5, 2.0), 'neg': (-2.0, -1.5)},
         'Al2O3': {'pos': (1.38, 2.0), 'neg': (-2.0, -1.38)},
@@ -26,15 +26,15 @@ class RRAMPhysics(DevicePhysics):
     a0 = 0.25e-9            # Atomic distance [m]
     gap_min = 0.1e-9        # Minimum gap [m]
     gap_max = 1.7e-9        # Maximum gap [m]
-    Tau_th = 3.5e-10        # Effective thermal time constant [s]
+    Tau_th = 2.3e-10        # Effective thermal time constant [s]
     g1 = 1e-9               # Length scale for gamma calculation [m]
-    beta = 0.3              # Field enhancement coefficient
-    gamma0 = 4.0            # Field enhancement factor
-    Vel0 = 100              # Base velocity [m/s]
+    beta = 1.25             # Field enhancement coefficient
+    gamma0 = {'pos': 15, 'neg': 8.5}    # Field enhancement factor, by voltage polarity
+    Vel0 = {'pos': 120, 'neg': 150}     # Base velocity [m/s], by voltage polarity
     material_params = {
-        'HfO2': {'Eag': 1.241, 'Ear': 1.24, 'Cth': 2.17e-17},
-        'Al2O3': {'Eag': 1.001, 'Ear': 1.0, 'Cth': 2.12e-17},
-        'TiO2': {'Eag': 1.701, 'Ear': 1.70, 'Cth': 2.26e-17},
+        'HfO2': {'Eag': 1.241, 'Ear': 1.24, 'Cth': 3.05e-18},
+        'Al2O3': {'Eag': 1.001, 'Ear': 1.0, 'Cth': 2.98e-18},
+        'TiO2': {'Eag': 1.501, 'Ear': 1.50, 'Cth': 3.18e-18},
     }
 
     def __init__(self):
@@ -42,12 +42,13 @@ class RRAMPhysics(DevicePhysics):
 
     def simulate(self, dt, voltage, current, material):
         params = self.material_params[material]
+        polarity = 'pos' if voltage[-1] > 0 else 'neg'
         as_tensor = lambda value: torch.tensor(value, device=dt.device, dtype=dt.dtype)
         gap, _ = simulate_rram(
             dt, voltage, current,
-            as_tensor(self.gamma0), as_tensor(self.beta), as_tensor(self.g1), as_tensor(self.q),
+            as_tensor(self.gamma0[polarity]), as_tensor(self.beta), as_tensor(self.g1), as_tensor(self.q),
             as_tensor(params['Eag']), as_tensor(self.kb), as_tensor(self.a0), as_tensor(self.tox),
-            as_tensor(params['Ear']), as_tensor(self.Vel0), as_tensor(self.gap_min),
+            as_tensor(params['Ear']), as_tensor(self.Vel0[polarity]), as_tensor(self.gap_min),
             as_tensor(self.gap_max), as_tensor(self.T0), as_tensor(params['Cth']), as_tensor(self.Tau_th),
         )
         return gap

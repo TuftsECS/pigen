@@ -14,28 +14,21 @@ class EnduranceCalculator:
         self.a0 = 0.25e-9             # Atomic distance [m]
         self.tox = 5e-9               # Oxide thickness [m]
         self.f0 = 1e13                # Attempt frequency [Hz]
-        # Joule heating at the Verilog-A RRAM model's scale (Cth 3.1825e-16 J/K, Tau_th 2.3e-10 s), keeping the dataset's material
-        # ratios of Cth. RRAMPhysics keeps the dataset generator's Cth (~1/15 of this), which reproduces the data but heats the
-        # cell to thousands of K; endurance needs a physical temperature.
         self.Tau_th = 2.3e-10         # Effective thermal time constant [s]
-
-        # Endurance = exp((Uf - Us) q / kT) at the operation's peak temperature. Uf is set so that the median SET operating point
-        # (peak ~560-700 K) gives typical reported endurance: HfO2 ~1e5.6 (median 1e5 / mode 1e6 of published HfO2 devices),
-        # TiO2 ~1e5, Al2O3 ~1e4. Recalibrate Uf if the temperature model changes.
         self.material_params = {
             'HfO2': {
                 'Us': switching_barriers['HfO2'],  # Switching barrier = Eag
-                'Uf': 1.93,           # Failure barrier > Eag
+                'Uf': 1.74,           # Failure barrier > Eag
                 'Cth': 3.1825e-16,    # Effective thermal capacitance [J/K]
             },
             'Al2O3': {
                 'Us': switching_barriers['Al2O3'],  # Switching barrier = Eag
-                'Uf': 1.45,           # Failure barrier > Eag
+                'Uf': 1.35,           # Failure barrier > Eag
                 'Cth': 3.112e-16,
             },
             'TiO2': {
                 'Us': switching_barriers['TiO2'],  # Switching barrier = Eag
-                'Uf': 2.39,           # Failure barrier > Eag
+                'Uf': 1.96,           # Failure barrier > Eag
                 'Cth': 3.3234e-16,
             }
         }

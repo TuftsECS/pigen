@@ -1,8 +1,8 @@
 """Launch PIGen training runs (PDE vs no-PDE over datasets, splits and seeds) and summarize them.
 
 Run from the repository root:
-  python compare.py run --data data/rram_ICCAD.mat               # every run, one after another on this machine
-  python compare.py run --data data/rram_ICCAD.mat --slurm       # one SLURM job array, one task per run
+  python compare.py run --data data/rram.mat               # every run, one after another on this machine
+  python compare.py run --data data/rram.mat --slurm       # one SLURM job array, one task per run
   python compare.py run ... --dry_run                            # only print what would run
   python compare.py run ... -- --epochs 500 --hidden_size 64     # arguments after -- go to every train.py call
   python compare.py summarize --out results/compare              # PDE vs no-PDE, paired by seed
@@ -20,7 +20,7 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parent
 # Shared copy of the dataset on the Tufts HPC cluster, used when no dataset is given.
-DEFAULT_DATA = '/cluster/tufts/donatolab/shared/datasets/pigen/rram_ICCAD.mat'
+DEFAULT_DATA = '/cluster/tufts/donatolab/shared/datasets/pigen/rram.mat'
 SPLIT_PATTERN = re.compile(r'full|stride_\d*\.?\d+')
 EPOCH_PATTERN = re.compile(
     r"Valid - MLP Loss: (\S+), Log-t MSE: (\S+),.*?Mean Error: (\S+)% .*?"
