@@ -38,6 +38,7 @@ slurm-*.out
 # Generated outputs
 recommendation_results/
 *.json
+handoff.md
 
 # Plots and figures (generated)
 *.png

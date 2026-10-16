@@ -27,7 +27,7 @@ class DevicePhysics:
         raise NotImplementedError
 
     def normalize_state(self, state):
-        """Map the physical state onto [-1, 1], the output range of the state PINN."""
+        """Map the physical state onto [-1, 1]."""
         raise NotImplementedError
 
     def endurance(self, current, voltage, dt, material):

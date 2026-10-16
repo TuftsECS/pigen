@@ -9,7 +9,7 @@ def init_weights(module):
             nn.init.constant_(module.bias, 0)
 
 class StatePINN(nn.Module):
-    """GRU predicting the device's normalized internal state in [-1, 1] from time, time step, voltage and material."""
+    """GRU predicting the device's normalized internal state from time, time step, voltage and material."""
 
     def __init__(self, num_materials, hidden_size=32, embedding_size=5):
         super().__init__()
@@ -42,8 +42,7 @@ class StatePINN(nn.Module):
             nn.LayerNorm(hidden_size),
             nn.Linear(hidden_size, hidden_size//2),
             nn.Tanh(),
-            nn.Linear(hidden_size//2, 1),
-            nn.Tanh()
+            nn.Linear(hidden_size//2, 1)
         )
         
         self.apply(init_weights)
