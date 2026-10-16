@@ -8,12 +8,15 @@ from core.cvae.evaluator import DeviceEvaluator
 from core.cvae.generative_model import ParameterRecommender, train_cvae
 from core.cvae.pareto_front import generate_pareto_plot
 
+# Shared copy of the dataset on the Tufts HPC cluster, used when no dataset is given.
+DEFAULT_DATA_PATH = '/cluster/tufts/donatolab/shared/datasets/pigen/rram_ICCAD.mat'
+
 def main():
     parser = argparse.ArgumentParser(description='CVAE parameter recommendation and Pareto front generation for one memory device.')
 
     parser.add_argument('--physics', type=str, default='rram', help='Device package providing the physics core')
     parser.add_argument('--model_path', type=str, required=True, help='Trained PINN checkpoint from train.py (e.g. checkpoints/best_logt_mse_checkpoint.pth)')
-    parser.add_argument('--data_path', type=str, required=True, help='Dataset (.mat)')
+    parser.add_argument('--data_path', type=str, default=DEFAULT_DATA_PATH, help='Dataset (.mat)')
     parser.add_argument('--output_dir', type=str, default='recommendation_results', help='Directory to save outputs')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for computation (cuda/cpu)')
     parser.add_argument('--generate_pareto', action='store_true', help='Generate and save the Pareto front plot.')

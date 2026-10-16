@@ -18,11 +18,13 @@ CHECKPOINT_METRICS = [
 ]
 # Start learning rates validated on rram_ICCAD, used when --learning_rate_* is not given.
 DEFAULT_LR = {'pde': 1e-3, 'no_pde': 3e-4}
+# Shared copy of the dataset on the Tufts HPC cluster, used when no dataset is given.
+DEFAULT_DATA_PATH = '/cluster/tufts/donatolab/shared/datasets/pigen/rram_ICCAD.mat'
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train the state PINN and current readout of one memory device.')
     parser.add_argument('--physics', type=str, default='rram', help='Device package providing the physics core')
-    parser.add_argument('--data_path', type=str, required=True, help='Dataset (.mat)')
+    parser.add_argument('--data_path', type=str, default=DEFAULT_DATA_PATH, help='Dataset (.mat)')
     parser.add_argument('--exp_name', type=str, required=True, help='Experiment name for logging')
     parser.add_argument('--save_dir', type=str, default='checkpoints')
     parser.add_argument('--use_pde', action='store_true', help='Supervise the PINN state with the device physics')

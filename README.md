@@ -71,7 +71,7 @@ conda activate pigen
 
 ### Data Preparation
 
-PIGen expects a MATLAB `.mat` file of switching sequences, for ReRAM generated from the [Stanford RRAM Model](https://nano.stanford.edu/downloads/stanford-rram-model). Place datasets under `data/`.
+PIGen expects a MATLAB `.mat` file of switching sequences, for ReRAM generated from the [Stanford RRAM Model](https://nano.stanford.edu/downloads/stanford-rram-model). Place datasets under `data/` and pass them with `--data_path` (`--data` for `compare.py`); without it, the scripts read the shared copy on the Tufts HPC cluster, `/cluster/tufts/donatolab/shared/datasets/pigen/rram_ICCAD.mat`.
 
 Each sequence `i` should have the following keys:
 
@@ -98,7 +98,7 @@ python train.py --data_path data/rram_ICCAD.mat --exp_name my_experiment --use_p
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--data_path` | (required) | Dataset (`.mat`) |
+| `--data_path` | Tufts HPC shared copy | Dataset (`.mat`), see [Data Preparation](#data-preparation) |
 | `--exp_name` | (required) | Experiment name for logging |
 | `--physics` | `rram` | Device package providing the physics core |
 | `--use_pde` | False | Supervise the PINN state with the device physics |

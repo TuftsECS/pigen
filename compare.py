@@ -19,6 +19,8 @@ from pathlib import Path
 import numpy as np
 
 REPO = Path(__file__).resolve().parent
+# Shared copy of the dataset on the Tufts HPC cluster, used when no dataset is given.
+DEFAULT_DATA = '/cluster/tufts/donatolab/shared/datasets/pigen/rram_ICCAD.mat'
 SPLIT_PATTERN = re.compile(r'full|stride_\d*\.?\d+')
 EPOCH_PATTERN = re.compile(
     r"Valid - MLP Loss: (\S+), Log-t MSE: (\S+),.*?Mean Error: (\S+)% .*?"
@@ -152,7 +154,7 @@ def main():
     commands = parser.add_subparsers(dest='command', required=True)
 
     run_parser = commands.add_parser('run', help='Train every dataset x mode x split x seed combination')
-    run_parser.add_argument('--data', nargs='+', required=True, help='Dataset .mat file(s)')
+    run_parser.add_argument('--data', nargs='+', default=[DEFAULT_DATA], help='Dataset .mat file(s)')
     run_parser.add_argument('--physics', default='rram', help='Device package providing the physics core')
     run_parser.add_argument('--modes', nargs='+', default=['pde', 'no_pde'], choices=['pde', 'no_pde'])
     run_parser.add_argument('--splits', nargs='+', default=['full', 'stride_0.1', 'stride_0.2', 'stride_0.4', 'stride_0.8'],
