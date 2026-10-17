@@ -82,7 +82,7 @@ def calculate_size_for_endurance(endurance):
 
 def generate_pareto_plot(physics,
                         data_path,
-                        model_path='checkpoints/best_logt_mse_checkpoint.pth',
+                        model_path='checkpoints/best_checkpoint.pth',
                         output_dir='recommendation_results',
                         cvae_model_path='recommendation_results/cvae_model.pth',
                         dataset_path='recommendation_results/cvae_dataset.pt',

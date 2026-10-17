@@ -15,7 +15,7 @@ def main():
     parser = argparse.ArgumentParser(description='CVAE parameter recommendation and Pareto front generation for one memory device.')
 
     parser.add_argument('--physics', type=str, default='rram', help='Device package providing the physics core')
-    parser.add_argument('--model_path', type=str, required=True, help='Trained PINN checkpoint from train.py (e.g. checkpoints/best_logt_mse_checkpoint.pth)')
+    parser.add_argument('--model_path', type=str, required=True, help='Trained PINN checkpoint from train.py (e.g. checkpoints/best_checkpoint.pth)')
     parser.add_argument('--data_path', type=str, default=DEFAULT_DATA_PATH, help='Dataset (.mat)')
     parser.add_argument('--output_dir', type=str, default='recommendation_results', help='Directory to save outputs')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for computation (cuda/cpu)')

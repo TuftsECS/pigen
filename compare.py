@@ -22,13 +22,12 @@ REPO = Path(__file__).resolve().parent
 # Shared dataset on the Tufts HPC cluster.
 DEFAULT_DATA = '/cluster/tufts/donatolab/shared/datasets/pigen/rram.mat'
 SPLIT_PATTERN = re.compile(r'full|stride_\d*\.?\d+')
-EPOCH_PATTERN = re.compile(
-    r"Valid - MLP Loss: (\S+), Log-t MSE: (\S+),.*?Mean Error: (\S+)% .*?"
-    r"Final Current Acc: (\S+)% \(5%\), (\S+)% \(10%\).*?"
-    r"t90 Acc: (\S+)%", re.S)
-# Summary columns: (label, lower is better), in the order of EPOCH_PATTERN groups.
-SUMMARY_METRICS = [('val MSE', True), ('log-t MSE', True), ('mean error %', True),
-                   ('final current 5%', False), ('final current 10%', False), ('t90 0.25 dex %', False)]
+SELECTED_PATTERN = re.compile(
+    r"Selected epoch \d+ - Final Current Acc: (\S+)% \(5%\), (\S+)% \(10%\), t90 Acc: (\S+)% \(0\.25 dex\), "
+    r"Joint Pass: ([^,]+), Missed: ([^,]+), False: [^,]+, TB log-MAE: (\S+), Balanced:")
+# Summary columns at each run's selected checkpoint: (label, lower is better), in the order of SELECTED_PATTERN groups.
+SUMMARY_METRICS = [('final current 5%', False), ('final current 10%', False), ('t90 0.25 dex %', False),
+                   ('joint pass %', False), ('missed switch %', True), ('TB log-MAE', True)]
 # Columns printed together; the summary is split into blocks to stay readable in a terminal.
 SUMMARY_BLOCKS = [[0, 1, 2], [3, 4, 5]]
 
@@ -96,14 +95,11 @@ def run(args, extra):
         sys.exit('Failed runs:\n' + '\n'.join(failed))
 
 
-def best_metrics(log):
-    if not log.exists():
+def selected_metrics(log):
+    match = SELECTED_PATTERN.search(log.read_text()) if log.exists() else None
+    if match is None:
         return None
-    text = log.read_text()
-    if 'Training completed!' not in text:
-        return None
-    rows = np.array(EPOCH_PATTERN.findall(text), dtype=float)
-    return [rows[:, i].min() if lower else rows[:, i].max() for i, (_, lower) in enumerate(SUMMARY_METRICS)]
+    return [float('nan') if value == 'n/a' else float(value.rstrip('%')) for value in match.groups()]
 
 
 def split_order(split):
@@ -121,13 +117,13 @@ def summarize(args):
         for split in sorted(splits, key=split_order):
             pairs = []
             for seed_dir in sorted((data_dir / 'pde' / split).glob('seed_*')):
-                pde = best_metrics(seed_dir / 'training.log')
-                no_pde = best_metrics(data_dir / 'no_pde' / split / seed_dir.name / 'training.log')
+                pde = selected_metrics(seed_dir / 'training.log')
+                no_pde = selected_metrics(data_dir / 'no_pde' / split / seed_dir.name / 'training.log')
                 if pde and no_pde:
                     pairs.append((pde, no_pde))
             pairs_by_split[split] = pairs
 
-        print(f'\n== {data_dir.name}: best validation epoch, mean over seeds, PDE / no-PDE (seeds where PDE is better)')
+        print(f'\n== {data_dir.name}: selected checkpoint, mean over seeds, PDE / no-PDE (seeds where PDE is better)')
         for block in SUMMARY_BLOCKS:
             print(f'{"split":<12}{"seeds":>6}  ' + ''.join(f'{SUMMARY_METRICS[j][0]:>28}' for j in block))
             for split, pairs in pairs_by_split.items():

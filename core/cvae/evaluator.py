@@ -43,8 +43,6 @@ class DeviceEvaluator:
         mlp_model.eval()
         
         print(f"Successfully loaded model - Epoch: {checkpoint['epoch']+1}")
-        print(f"Validation accuracy: {checkpoint['best_valid_accuracy']:.2f}%")
-        print(f"Validation mean error: {checkpoint['best_valid_mean_error']:.2f}%")
         
         return checkpoint, pinn_model, mlp_model
     

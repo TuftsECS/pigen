@@ -9,13 +9,6 @@ from core import (
     configure_optimizers, save_checkpoint, setup_logger, train_epoch, validate_epoch,
 )
 
-# Validation metrics tracked for checkpointing, with whether higher is better.
-CHECKPOINT_METRICS = [
-    ('mean_error', False),
-    ('logt_mse', False),
-    ('final_current_accuracy_5', True),
-    ('t90_accuracy', True),
-]
 # Start learning rates validated on rram.mat, used when --learning_rate_* is not given.
 DEFAULT_LR = {'pde': 1e-3, 'no_pde': 3e-4}
 # Shared dataset on the Tufts HPC cluster.
@@ -49,6 +42,12 @@ def get_args():
     if args.learning_rate_mlp is None:
         args.learning_rate_mlp = default_lr
     return args
+
+def format_metrics(m):
+    rate = lambda value: 'n/a' if value is None else f'{value:.2f}%'
+    return (f"Final Current Acc: {m['final_current_accuracy_5']:.2f}% (5%), {m['final_current_accuracy_10']:.2f}% (10%), "
+            f"t90 Acc: {m['t90_accuracy']:.2f}% (0.25 dex), Joint Pass: {rate(m['joint_pass'])}, Missed: {rate(m['missed_rate'])}, "
+            f"False: {rate(m['false_rate'])}, TB log-MAE: {m['time_balanced_logmae']:.6f}, Balanced: {m['balanced_score']:.6f}")
 
 def log_data_summary(logger, config, physics, train_dataset, val_dataset):
     split = ('random 80/20 split' if config['use_full_dataset']
@@ -106,7 +105,7 @@ def main():
     base_lrs = [(pinn_optimizer, config['learning_rate_pinn']), (mlp_optimizer, config['learning_rate_mlp'])]
     best_train_loss = float('inf')
     epochs_without_improvement = 0
-    best = {metric: (-float('inf') if higher else float('inf')) for metric, higher in CHECKPOINT_METRICS}
+    best_score, best_epoch, best_metrics = (float('inf'), float('inf')), None, None
 
     for epoch in range(config['epochs']):
         if epoch < config['warmup_epochs']:
@@ -125,24 +124,19 @@ def main():
             f"Epoch [{epoch+1}/{config['epochs']}]:\n"
             f"  Train - MLP Loss: {train_mlp_loss:.6f}, PINN Loss: {train_pinn_loss:.6f}\n"
             f"  Valid - MLP Loss: {val_metrics['mlp_loss']:.6f}, Log-t MSE: {val_metrics['logt_mse']:.6f}, PINN Loss: {val_metrics['pinn_loss']:.6f}\n"
-            f"  Valid Metrics - Mean Error: {val_metrics['mean_error']:.2f}% (Max: {val_metrics['max_error']:.2f}%)\n"
-            f"                - Final Current Acc: {val_metrics['final_current_accuracy_5']:.2f}% (5%), {val_metrics['final_current_accuracy_10']:.2f}% (10%)\n"
-            f"                - t90 Acc: {val_metrics['t90_accuracy']:.2f}% (0.25 dex)\n"
+            f"  Valid Metrics - {format_metrics(val_metrics)}\n"
             f"  LRs - PINN: {train_metrics['learning_rates']['pinn_lr']:.2e}, MLP: {train_metrics['learning_rates']['mlp_lr']:.2e}"
             + (f"\n  PDE Weight: {train_metrics['pde_weight']:.3f}" if pde_scheduler and config['use_pde'] else "")
             + (f"\n  Skipped non-finite steps: {train_metrics['skipped_steps']}" if train_metrics['skipped_steps'] else "")
         )
 
-        for metric, higher in CHECKPOINT_METRICS:
-            value = val_metrics[metric]
-            if (value > best[metric]) if higher else (value < best[metric]):
-                best[metric] = value
-                save_checkpoint(config['save_dir'], epoch, pinn_model, mlp_model, pinn_optimizer, mlp_optimizer,
-                                val_metrics, scalers, metric)
-                logger.info(f"New best {metric}: {value:.6g} (checkpoint saved)")
-                if metric == 'logt_mse':
-                    validate_epoch(pinn_model, mlp_model, val_dataset, physics, scalers, use_pde=config['use_pde'],
-                                   pde_scheduler=pde_scheduler, save_dir=config['save_dir'])
+        score = (val_metrics['balanced_score'], val_metrics['time_balanced_logmae'])
+        if score < best_score:
+            best_score, best_epoch, best_metrics = score, epoch, val_metrics
+            save_checkpoint(config['save_dir'], epoch, pinn_model, mlp_model, pinn_optimizer, mlp_optimizer, val_metrics, scalers)
+            logger.info(f"New best checkpoint: balanced score {score[0]:.6g}, TB log-MAE {score[1]:.6g} (saved)")
+            validate_epoch(pinn_model, mlp_model, val_dataset, physics, scalers, use_pde=config['use_pde'],
+                           pde_scheduler=pde_scheduler, save_dir=config['save_dir'])
 
         if epoch + 1 >= config['warmup_epochs']:
             pinn_scheduler.step(train_mlp_loss)
@@ -160,8 +154,7 @@ def main():
             break
             
     logger.info("Training completed!")
-    logger.info(f"Best mean error achieved: {best['mean_error']:.2f}%")
-    logger.info(f"Best log-t MSE achieved: {best['logt_mse']:.6f}")
+    logger.info(f"Selected epoch {best_epoch + 1} - {format_metrics(best_metrics)}")
     if pde_scheduler and config['use_pde']:
         logger.info(f"Final PDE weight: {pde_scheduler.get_weight():.3f}")
     

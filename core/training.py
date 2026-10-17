@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import numpy as np
 from datetime import datetime
 from .cache import PhysicsSimulationCache
-from .metrics import accuracy_percents, log_time_weights, mean_relative_error, switching_errors
+from .metrics import log_errors, log_time_weights, summarize_records, switching_errors
 from .plotting import plot_state_sequence
 
 # Leading samples of every sequence (the voltage ramp-up) that are excluded from model inputs and losses.
@@ -203,8 +203,7 @@ def validate_epoch(pinn_model, mlp_model, dataset, physics, scalers, use_pde=Tru
     total_mlp_loss = 0
     total_pinn_loss = 0
     total_logt_mse = 0
-    errors = []
-    records = []
+    groups = {}
 
     device = next(pinn_model.parameters()).device
     current_scale = float(scalers['current'].scale_[0])
@@ -226,8 +225,9 @@ def validate_epoch(pinn_model, mlp_model, dataset, physics, scalers, use_pde=Tru
 
             pred_real = (pred_current * current_scale + current_mean).detach().cpu().numpy()
             true_real = (s['current'] * current_scale + current_mean).detach().cpu().numpy()
-            errors.append(mean_relative_error(pred_real, true_real))
-            records.append(switching_errors(time_real.detach().cpu().numpy(), true_real, pred_real))
+            time_np = time_real.detach().cpu().numpy()
+            key = (sequence['material'], 'set' if s['voltage_real_full'][-1] > 0 else 'reset')
+            groups.setdefault(key, []).append((switching_errors(time_np, true_real, pred_real), log_errors(time_np, true_real, pred_real)))
 
             total_mlp_loss += mlp_loss.item()
             total_pinn_loss += pinn_loss.item()
@@ -241,7 +241,5 @@ def validate_epoch(pinn_model, mlp_model, dataset, physics, scalers, use_pde=Tru
         'mlp_loss': total_mlp_loss / num_sequences,
         'logt_mse': total_logt_mse / num_sequences,
         'pinn_loss': total_pinn_loss / num_sequences,
-        'mean_error': float(np.mean(errors)) if errors else 0.0,
-        'max_error': float(np.max(errors)) if errors else 0.0,
-        **accuracy_percents(records),
+        **summarize_records(groups),
     }

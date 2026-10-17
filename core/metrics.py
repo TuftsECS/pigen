@@ -6,11 +6,8 @@ NO_SWITCH_RELATIVE_RANGE = 0.1  # |final - start| / max(|start|, |final|) at or 
 FINAL_WINDOW = 0.1               # trailing fraction of the time axis averaged for the final current
 FINAL_CURRENT_TOLERANCES = (5.0, 10.0)
 T90_TOLERANCE = 0.25             # decades; |log10| of the ratio of the 90 % crossing times
-ACCURACIES = (
-    ('final_current_accuracy_5', 'final_current', FINAL_CURRENT_TOLERANCES[0]),
-    ('final_current_accuracy_10', 'final_current', FINAL_CURRENT_TOLERANCES[1]),
-    ('t90_accuracy', 't90_dex', T90_TOLERANCE),
-)
+CURRENT_FLOOR = 1e-12            # A; the log errors read a smaller |current| at this level
+SELECTION_CAP = 4.0              # balanced score: an error counts at most this many tolerances, a miss or false switch this much
 
 
 def log_time_weights(time_real_full):
@@ -55,20 +52,68 @@ def switching_errors(time, observed, predicted):
     return result
 
 
-def mean_relative_error(pred, true):
-    """Mean pointwise relative error of one sequence, in percent."""
-    pred, true = np.asarray(pred, dtype=float), np.asarray(true, dtype=float)
-    return float(np.mean(np.abs(pred - true) / (np.abs(true) + 1e-10)) * 100)
+def time_balanced_weights(time, reference):
+    """Trapezoidal point weights summing to one, half in t and half in log1p(t / reference)."""
+    time = np.asarray(time, dtype=float)
+    delta = np.diff(time)
+    halves = []
+    for intervals in (delta, np.log1p(delta / (time[:-1] + reference))):
+        normalized = intervals / intervals.sum()
+        halves.append(np.concatenate((normalized[:1], normalized[:-1] + normalized[1:], normalized[-1:])) / 2)
+    return (halves[0] + halves[1]) / 2
 
 
-def accuracy_percents(records):
-    """Accuracies in percent. A miss counts as inaccurate; 0 when a metric has no records."""
-    values = {
-        'final_current': [r['final_current'] for r in records],
-        't90_dex': [r['t90_dex'] for r in records if r['eligible']],
-    }
-    out = {}
-    for key, metric, tolerance in ACCURACIES:
-        group = values[metric]
-        out[key] = 0.0 if not group else 100.0 * sum(v is not None and v <= tolerance for v in group) / len(group)
+def log_errors(time, observed, predicted):
+    """Time-balanced and plain mean |log10 I| errors and the linear relative error of one trace whose plateau starts at time[0]."""
+    observed, predicted = np.asarray(observed, dtype=float), np.asarray(predicted, dtype=float)
+    error = np.abs(np.log10(np.maximum(np.abs(predicted), CURRENT_FLOOR)) - np.log10(np.maximum(np.abs(observed), CURRENT_FLOOR)))
+    return dict(time_balanced_logmae=float((time_balanced_weights(time, time[0]) * error).sum()), logmae=float(error.mean()),
+                linear_relative_error=float(np.abs(predicted - observed).sum() / max(np.abs(observed).sum(), CURRENT_FLOOR)))
+
+
+def _capped(value, tolerance):
+    return SELECTION_CAP if value is None else min(value / tolerance, SELECTION_CAP)
+
+
+def balanced_score(records):
+    """Selection score (lower is better): capped final-current and t90 errors in tolerances, averaged per record, then within and
+    across the switching and non-switching records."""
+    def error(r):
+        final = _capped(r['final_current'], FINAL_CURRENT_TOLERANCES[1])
+        if not r['eligible']:
+            return (final + (SELECTION_CAP if r['predicted']['switches'] else 0.0)) / 2
+        return (final + _capped(r['t90_dex'], T90_TOLERANCE)) / 2
+    classes = [[error(r) for r in records if r['eligible'] == switching] for switching in (True, False)]
+    return float(np.mean([np.mean(errors) for errors in classes if errors]))
+
+
+def joint_pass(record):
+    """Final current within 10 % and t90 within 0.25 decade; a non-switching record passes only if no switch is predicted."""
+    if record['final_current'] is None or record['final_current'] > FINAL_CURRENT_TOLERANCES[1]:
+        return False
+    if not record['eligible']:
+        return not record['predicted']['switches']
+    return record['t90_dex'] is not None and record['t90_dex'] <= T90_TOLERANCE
+
+
+def summarize_records(groups):
+    """Validation metrics of {key: [(switching_errors record, log_errors dict), ...]}: accuracies (percent) and log errors averaged
+    equally over keys; joint pass, missed and false switch rates (percent, None without such records) and the balanced score pooled."""
+    def share(flags):
+        return 100.0 * sum(flags) / len(flags) if flags else None
+
+    per_key = []
+    for rows in groups.values():
+        records = [r for r, _ in rows]
+        per_key.append(dict(
+            **{f'final_current_accuracy_{int(t)}': share([r['final_current'] is not None and r['final_current'] <= t for r in records])
+               for t in FINAL_CURRENT_TOLERANCES},
+            t90_accuracy=share([r['t90_dex'] is not None and r['t90_dex'] <= T90_TOLERANCE for r in records if r['eligible']]),
+            **{name: float(np.mean([e[name] for _, e in rows])) for name in ('time_balanced_logmae', 'logmae', 'linear_relative_error')}))
+    out = {name: float(np.mean([k[name] for k in per_key if k[name] is not None])) for name in per_key[0]}
+    records = [r for rows in groups.values() for r, _ in rows]
+    out.update(joint_pass=share([joint_pass(r) for r in records]),
+               missed_rate=share([not r['predicted']['switches'] for r in records if r['eligible']]),
+               false_rate=share([r['predicted']['switches'] for r in records if not r['eligible']]),
+               balanced_score=balanced_score(records))
     return out

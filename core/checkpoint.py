@@ -15,7 +15,7 @@ def configure_optimizers(pinn_model, mlp_model, config):
     )
     return pinn_optimizer, mlp_optimizer
 
-def save_checkpoint(save_dir, epoch, pinn_model, mlp_model, pinn_optimizer, mlp_optimizer, val_metrics, scalers, metric):
+def save_checkpoint(save_dir, epoch, pinn_model, mlp_model, pinn_optimizer, mlp_optimizer, val_metrics, scalers):
     os.makedirs(save_dir, exist_ok=True)
     checkpoint = {
         'epoch': epoch,
@@ -23,12 +23,10 @@ def save_checkpoint(save_dir, epoch, pinn_model, mlp_model, pinn_optimizer, mlp_
         'mlp_model_state_dict': mlp_model.state_dict(),
         'pinn_optimizer_state_dict': pinn_optimizer.state_dict(),
         'mlp_optimizer_state_dict': mlp_optimizer.state_dict(),
-        'best_valid_mean_error': val_metrics['mean_error'],
-        'best_valid_max_error': val_metrics['max_error'],
-        'best_valid_accuracy': val_metrics['final_current_accuracy_5'],
+        'valid_metrics': val_metrics,
         'scalers': scalers
     }
-    torch.save(checkpoint, os.path.join(save_dir, f'best_{metric}_checkpoint.pth'))
+    torch.save(checkpoint, os.path.join(save_dir, 'best_checkpoint.pth'))
 
 def load_checkpoint(path, device):
     """Checkpoints hold fitted sklearn scalers, so they cannot be loaded with torch's weights-only mode."""

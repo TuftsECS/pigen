@@ -118,15 +118,18 @@ python train.py --data_path data/rram.mat --exp_name my_experiment --use_pde --v
 
 | Metric | Definition |
 |--------|------------|
-| MLP Loss | MSE of the standardized current |
-| Log-t MSE | Same MSE with each time point weighted by the log-time span it covers, so the fast switching transient counts as much as the long plateau |
-| Mean Error | Mean relative current error (%) |
+| MLP Loss | MSE of the standardized current (training loss) |
+| Log-t MSE | Same MSE with each time point weighted by the log-time span it covers |
 | Final Current Acc | Share of sequences whose mean \|current\| over the last 10 % of the time axis is within 5 % or 10 % of the measured mean |
 | t90 Acc | Share of switching sequences whose 90 % crossing is within 0.25 decade (about 1.8×) of the measured crossing. This is when the transition finishes |
+| Joint Pass | Share of sequences with the final current within 10 % and t90 within 0.25 decade; a sequence that does not switch passes only if the prediction does not switch |
+| Missed / False | Share of switching sequences predicted not to switch / of non-switching sequences predicted to switch |
+| TB log-MAE | Mean \|log10 I\| error, each point weighted half by the time and half by the log time it covers |
+| Balanced | Selection score: final-current and t90 errors in units of their tolerances (10 %, 0.25 decade), capped at 4, averaged per sequence and then over switching and non-switching sequences |
 
-Both curves are measured on \|current\|, each between its own first sample and its own trailing mean, so an error in amplitude does not move the crossing time. A measured curve that changes by at most 10 % of its larger endpoint is not a switch and is scored only on final current. If the measurement switches and the prediction does not, that sequence counts as inaccurate.
+Both curves are measured on \|current\|, each between its own first sample and its own trailing mean, so an error in amplitude does not move the crossing time. A measured curve that changes by at most 10 % of its larger endpoint is not a switch and is scored only on final current. If the measurement switches and the prediction does not, that sequence counts as inaccurate. The accuracies and TB log-MAE are averaged equally over (material, SET/RESET) groups; Joint Pass, Missed, False and Balanced pool all sequences. These are the evaluation metrics of PGNN.
 
-The best checkpoint for each tracked validation metric is saved to `<save_dir>/best_<metric>_checkpoint.pth` (`mean_error`, `logt_mse`, `final_current_accuracy_5`, `t90_accuracy`). Waveform plots under `<save_dir>/<state>_plots/` (for ReRAM, `gap_plots/`) are refreshed whenever the log-time-weighted MSE improves.
+The checkpoint with the lowest Balanced score (ties broken by TB log-MAE) is saved to `<save_dir>/best_checkpoint.pth`, and its metrics are logged at the end of training as `Selected epoch ...`. Waveform plots under `<save_dir>/<state>_plots/` (for ReRAM, `gap_plots/`) are refreshed whenever this checkpoint improves.
 
 ### 2. Comparing PDE and no-PDE Training
 
@@ -147,7 +150,7 @@ python compare.py run --data data/rram.mat --splits full stride_0.4 --seeds 42 4
 python compare.py summarize --out results/compare
 ```
 
-`summarize` prints one row per split. Each cell is `PDE / no-PDE (wins/seeds)`: the two numbers are means over seeds of that run's best epoch, and the fraction is how many seeds PDE wins. Losses count a win when PDE is lower; accuracies count a win when PDE is higher. Equal values are not wins.
+`summarize` prints one row per split. Each cell is `PDE / no-PDE (wins/seeds)`: the two numbers are means over seeds of each run's selected checkpoint, and the fraction is how many seeds PDE wins. Errors and the missed-switch rate count a win when PDE is lower; accuracies count a win when PDE is higher. Equal values are not wins.
 
 With `--setup`, jobs run `python` from the environment the setup commands activate; without it, they use the interpreter that runs `compare.py` (override either with `--python`). SLURM job scripts, task lists and logs are written to `<out>/.submit/<timestamp>/`. Re-using an `--out` directory overwrites earlier runs with the same name. Run `python compare.py run --help` for all options.
 
@@ -157,7 +160,7 @@ If retraining the CVAE with a new PINN checkpoint (`--physics` selects the devic
 
 ```bash
 python generate.py --train_cvae \
-                   --model_path checkpoints/best_logt_mse_checkpoint.pth \
+                   --model_path checkpoints/best_checkpoint.pth \
                    --data_path data/rram.mat \
                    --cvae_model_path recommendation_results/cvae_model.pth \
                    --dataset_path recommendation_results/cvae_dataset.pt
@@ -166,7 +169,7 @@ python generate.py --train_cvae \
 ### 4. Generating Parameter Recommendations
 
 ```bash
-python generate.py --model_path checkpoints/best_logt_mse_checkpoint.pth \
+python generate.py --model_path checkpoints/best_checkpoint.pth \
                    --data_path data/rram.mat \
                    --cvae_model_path recommendation_results/cvae_model.pth \
                    --dataset_path recommendation_results/cvae_dataset.pt \
@@ -181,7 +184,7 @@ The system generates 4 diverse recommendations optimized for different objective
 
 ```bash
 python generate.py --generate_pareto \
-                   --model_path checkpoints/best_logt_mse_checkpoint.pth \
+                   --model_path checkpoints/best_checkpoint.pth \
                    --data_path data/rram.mat \
                    --output_dir recommendation_results \
                    --target_switching_time 10e-9 \
