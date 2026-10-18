@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import numpy as np
 from datetime import datetime
 from .cache import PhysicsSimulationCache
-from .metrics import log_errors, log_time_weights, summarize_records, switching_errors
+from .metrics import log_errors, summarize_records, switching_errors
 from .plotting import plot_state_sequence
 
 # Leading samples of every sequence (the voltage ramp-up) that are excluded from model inputs and losses.
@@ -86,6 +86,17 @@ def setup_logger(save_dir: str, exp_name: str) -> logging.Logger:
     
     return logger
 
+def current_loss(pred_current, current, scalers, loss_type='mse'):
+    """Current data loss from standardized prediction and target: 'mse' of the standardized current, 'relative' (mean squared
+    pointwise relative error) or 'log' (MSE of ln|current|)."""
+    if loss_type == 'mse':
+        return F.mse_loss(pred_current, current)
+    scale, mean = float(scalers['current'].scale_[0]), float(scalers['current'].mean_[0])
+    pred, true = pred_current * scale + mean, current * scale + mean
+    if loss_type == 'relative':
+        return (((pred - true) / true.abs()) ** 2).mean()
+    return ((torch.log(pred.abs()) - torch.log(true.abs())) ** 2).mean()
+
 def state_loss(state_pred, state_physical, physics):
     return F.mse_loss(state_pred, physics.normalize_state(state_physical))
 
@@ -127,7 +138,7 @@ def physical_state(physics, s):
     return full[RAMP_SAMPLES:]
 
 def train_epoch(pinn_model, mlp_model, dataset, pinn_optimizer, mlp_optimizer, physics, scalers,
-                use_pde=True, pde_scheduler=None):
+                use_pde=True, pde_scheduler=None, loss_type='mse'):
     pinn_model.train()
     mlp_model.train() 
     
@@ -148,7 +159,7 @@ def train_epoch(pinn_model, mlp_model, dataset, pinn_optimizer, mlp_optimizer, p
 
         mlp_optimizer.zero_grad()
         pred_current = mlp_model(state, s['voltage'], s['initial_current'], s['material_idx'])
-        mlp_loss = F.mse_loss(pred_current, s['current'])
+        mlp_loss = current_loss(pred_current, s['current'], scalers, loss_type)
         mlp_loss.backward()
         if mlp_clipper.update(mlp_model.parameters()) is not None:
             mlp_optimizer.step()
@@ -161,7 +172,7 @@ def train_epoch(pinn_model, mlp_model, dataset, pinn_optimizer, mlp_optimizer, p
             pde_loss = state_loss(state, physical_state(physics, s), physics)
 
         pred_current = mlp_model(state, s['voltage'], s['initial_current'], s['material_idx'])
-        data_loss = F.mse_loss(pred_current, s['current'])
+        data_loss = current_loss(pred_current, s['current'], scalers, loss_type)
 
         if use_pde:
             if pde_scheduler:
@@ -196,13 +207,13 @@ def train_epoch(pinn_model, mlp_model, dataset, pinn_optimizer, mlp_optimizer, p
                 'skipped_steps': skipped_steps,
             })
     
-def validate_epoch(pinn_model, mlp_model, dataset, physics, scalers, use_pde=True, pde_scheduler=None, save_dir=None):
+def validate_epoch(pinn_model, mlp_model, dataset, physics, scalers, use_pde=True, pde_scheduler=None, save_dir=None,
+                   loss_type='mse'):
     pinn_model.eval()
     mlp_model.eval()
     
     total_mlp_loss = 0
     total_pinn_loss = 0
-    total_logt_mse = 0
     groups = {}
 
     device = next(pinn_model.parameters()).device
@@ -216,8 +227,7 @@ def validate_epoch(pinn_model, mlp_model, dataset, physics, scalers, use_pde=Tru
         with torch.no_grad():
             state = pinn_model(s['time'], s['dt_real'], s['voltage'], s['material_idx'])
             pred_current = mlp_model(state, s['voltage'], s['initial_current'], s['material_idx'])
-            mlp_loss = F.mse_loss(pred_current, s['current'])
-            total_logt_mse += (log_time_weights(s['time_real_full']) * (pred_current - s['current']) ** 2).mean().item()
+            mlp_loss = current_loss(pred_current, s['current'], scalers, loss_type)
             
             state_phys = physical_state(physics, s)
             pde_weight = pde_scheduler.get_weight() if pde_scheduler else 1.0
@@ -239,7 +249,6 @@ def validate_epoch(pinn_model, mlp_model, dataset, physics, scalers, use_pde=Tru
     num_sequences = len(dataset)
     return {
         'mlp_loss': total_mlp_loss / num_sequences,
-        'logt_mse': total_logt_mse / num_sequences,
         'pinn_loss': total_pinn_loss / num_sequences,
         **summarize_records(groups),
     }

@@ -111,15 +111,15 @@ python train.py --data_path data/rram.mat --exp_name my_experiment --use_pde --v
 | `--warmup_epochs` | 5 | Linear learning-rate warmup epochs |
 | `--lr_patience` | 20 | Epochs without training-loss improvement before halving the learning rate |
 | `--min_lr` | 1e-6 | Learning-rate floor |
-| `--early_stop_patience` | 50 | Epochs without improvement at the learning-rate floor before stopping |
+| `--early_stop_patience` | 200 | Epochs without a new best checkpoint (validation balanced score) before stopping |
+| `--current_loss` | `mse` | Current data loss: `mse` of the standardized current, `relative` (mean squared pointwise relative error) or `log` (MSE of ln\|current\|) |
 | `--hidden_size` | 128 | Hidden layer size |
 
 **Validation metrics** (logged every epoch):
 
 | Metric | Definition |
 |--------|------------|
-| MLP Loss | MSE of the standardized current (training loss) |
-| Log-t MSE | Same MSE with each time point weighted by the log-time span it covers |
+| MLP Loss | Current data loss selected by `--current_loss` (training loss) |
 | Final Current Acc | Share of sequences whose mean \|current\| over the last 10 % of the time axis is within 5 % or 10 % of the measured mean |
 | t90 Acc | Share of switching sequences whose 90 % crossing is within 0.25 decade (about 1.8×) of the measured crossing. This is when the transition finishes |
 | Joint Pass | Share of sequences with the final current within 10 % and t90 within 0.25 decade; a sequence that does not switch passes only if the prediction does not switch |

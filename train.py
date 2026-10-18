@@ -32,7 +32,9 @@ def get_args():
     parser.add_argument('--warmup_epochs', type=int, default=5, help='Linear LR warmup epochs')
     parser.add_argument('--lr_patience', type=int, default=20, help='Epochs without train loss improvement before halving LR')
     parser.add_argument('--min_lr', type=float, default=1e-6, help='LR floor')
-    parser.add_argument('--early_stop_patience', type=int, default=50, help='Epochs without improvement at the LR floor before stopping')
+    parser.add_argument('--early_stop_patience', type=int, default=200, help='Epochs without a new best checkpoint before stopping')
+    parser.add_argument('--current_loss', choices=['mse', 'relative', 'log'], default='mse',
+                        help='Current data loss: MSE of the standardized current, squared relative error, or MSE of ln|current|')
     parser.add_argument('--hidden_size', type=int, default=128)
     parser.add_argument('--embedding_size', type=int, default=5)
     args = parser.parse_args()
@@ -103,8 +105,6 @@ def main():
     pinn_scheduler = optim.lr_scheduler.ReduceLROnPlateau(pinn_optimizer, **plateau_kwargs)
     mlp_scheduler = optim.lr_scheduler.ReduceLROnPlateau(mlp_optimizer, **plateau_kwargs)
     base_lrs = [(pinn_optimizer, config['learning_rate_pinn']), (mlp_optimizer, config['learning_rate_mlp'])]
-    best_train_loss = float('inf')
-    epochs_without_improvement = 0
     best_score, best_epoch, best_metrics = (float('inf'), float('inf')), None, None
 
     for epoch in range(config['epochs']):
@@ -115,15 +115,15 @@ def main():
 
         train_mlp_loss, train_pinn_loss, train_metrics = train_epoch(
             pinn_model, mlp_model, train_dataset, pinn_optimizer, mlp_optimizer, physics, scalers,
-            use_pde=config['use_pde'], pde_scheduler=pde_scheduler)
+            use_pde=config['use_pde'], pde_scheduler=pde_scheduler, loss_type=config['current_loss'])
         val_metrics = validate_epoch(
             pinn_model, mlp_model, val_dataset, physics, scalers,
-            use_pde=config['use_pde'], pde_scheduler=pde_scheduler)
+            use_pde=config['use_pde'], pde_scheduler=pde_scheduler, loss_type=config['current_loss'])
 
         logger.info(
             f"Epoch [{epoch+1}/{config['epochs']}]:\n"
             f"  Train - MLP Loss: {train_mlp_loss:.6f}, PINN Loss: {train_pinn_loss:.6f}\n"
-            f"  Valid - MLP Loss: {val_metrics['mlp_loss']:.6f}, Log-t MSE: {val_metrics['logt_mse']:.6f}, PINN Loss: {val_metrics['pinn_loss']:.6f}\n"
+            f"  Valid - MLP Loss: {val_metrics['mlp_loss']:.6f}, PINN Loss: {val_metrics['pinn_loss']:.6f}\n"
             f"  Valid Metrics - {format_metrics(val_metrics)}\n"
             f"  LRs - PINN: {train_metrics['learning_rates']['pinn_lr']:.2e}, MLP: {train_metrics['learning_rates']['mlp_lr']:.2e}"
             + (f"\n  PDE Weight: {train_metrics['pde_weight']:.3f}" if pde_scheduler and config['use_pde'] else "")
@@ -136,21 +136,14 @@ def main():
             save_checkpoint(config['save_dir'], epoch, pinn_model, mlp_model, pinn_optimizer, mlp_optimizer, val_metrics, scalers)
             logger.info(f"New best checkpoint: balanced score {score[0]:.6g}, TB log-MAE {score[1]:.6g} (saved)")
             validate_epoch(pinn_model, mlp_model, val_dataset, physics, scalers, use_pde=config['use_pde'],
-                           pde_scheduler=pde_scheduler, save_dir=config['save_dir'])
+                           pde_scheduler=pde_scheduler, save_dir=config['save_dir'], loss_type=config['current_loss'])
 
         if epoch + 1 >= config['warmup_epochs']:
             pinn_scheduler.step(train_mlp_loss)
             mlp_scheduler.step(train_mlp_loss)
 
-        # Same improvement test as ReduceLROnPlateau (mode 'min', relative threshold).
-        if train_mlp_loss < best_train_loss * (1 - plateau_kwargs['threshold']):
-            best_train_loss = train_mlp_loss
-            epochs_without_improvement = 0
-        elif all(g['lr'] <= config['min_lr'] for o in (pinn_optimizer, mlp_optimizer) for g in o.param_groups):
-            epochs_without_improvement += 1
-        if epochs_without_improvement >= config['early_stop_patience']:
-            logger.info(f"Early stopping at epoch {epoch+1}: LR at floor {config['min_lr']:.1e}, "
-                        f"no train loss improvement for {epochs_without_improvement} epochs")
+        if epoch - best_epoch >= config['early_stop_patience']:
+            logger.info(f"Early stopping at epoch {epoch+1}: no new best checkpoint for {config['early_stop_patience']} epochs")
             break
             
     logger.info("Training completed!")

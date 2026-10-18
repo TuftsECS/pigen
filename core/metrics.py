@@ -1,5 +1,4 @@
-"""Log-time weights and switching accuracies. Definitions are in the README."""
-import torch
+"""Switching accuracies, log errors and the checkpoint selection score. Definitions are in the README."""
 import numpy as np
 
 NO_SWITCH_RELATIVE_RANGE = 0.1  # |final - start| / max(|start|, |final|) at or below this: no transition
@@ -8,12 +7,6 @@ FINAL_CURRENT_TOLERANCES = (5.0, 10.0)
 T90_TOLERANCE = 0.25             # decades; |log10| of the ratio of the 90 % crossing times
 CURRENT_FLOOR = 1e-12            # A; the log errors read a smaller |current| at this level
 SELECTION_CAP = 4.0              # balanced score: an error counts at most this many tolerances, a miss or false switch this much
-
-
-def log_time_weights(time_real_full):
-    """Per-point weights for time_real_full[2:], proportional to the log-time span each point covers (mean 1)."""
-    weights = torch.diff(torch.log(time_real_full))[1:].clamp_min(0)
-    return weights / weights.mean()
 
 
 def _crossing(time, current, level, increasing):
