@@ -33,7 +33,7 @@ def get_args():
     parser.add_argument('--lr_patience', type=int, default=20, help='Epochs without train loss improvement before halving LR')
     parser.add_argument('--min_lr', type=float, default=1e-6, help='LR floor')
     parser.add_argument('--early_stop_patience', type=int, default=200, help='Epochs without a new best checkpoint before stopping')
-    parser.add_argument('--current_loss', choices=['mse', 'relative', 'log'], default='mse',
+    parser.add_argument('--current_loss', choices=['mse', 'relative', 'log'], default='relative',
                         help='Current data loss: MSE of the standardized current, squared relative error, or MSE of ln|current|')
     parser.add_argument('--hidden_size', type=int, default=128)
     parser.add_argument('--embedding_size', type=int, default=5)

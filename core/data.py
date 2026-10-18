@@ -6,11 +6,23 @@ from sklearn.preprocessing import StandardScaler
 from typing import Optional, Union
 from collections import defaultdict
 import logging
+from .training import RAMP_SAMPLES
+
+GRID_POINTS_PER_DECADE = 100  # log-spaced part of the shared time grid
+GRID_STEP = 1e-9              # s; uniform part of the shared time grid
 
 def format_voltage(voltage: Union[float, np.ndarray, torch.Tensor], precision: int = 2) -> float:
     if isinstance(voltage, (np.ndarray, torch.Tensor)):
         voltage = float(voltage)
     return round(voltage, precision)
+
+def shared_time_grid(time):
+    """Ramp samples, log spacing until the step reaches GRID_STEP, then GRID_STEP steps to the end."""
+    start, end = time[RAMP_SAMPLES], time[-1]
+    log_end = GRID_STEP / (10 ** (1 / GRID_POINTS_PER_DECADE) - 1)
+    log_part = np.logspace(np.log10(start), np.log10(log_end), int(np.ceil(np.log10(log_end / start) * GRID_POINTS_PER_DECADE)) + 1)
+    uniform = end - GRID_STEP * np.arange(int(round((end - log_part[-1]) / GRID_STEP)) - 1, -1, -1)
+    return np.concatenate([time[:RAMP_SAMPLES], log_part, uniform])
 
 class SequenceDataset(Dataset):
     """Voltage/current switching sequences of one device, read from a .mat file and split by `physics` conventions."""
@@ -42,23 +54,16 @@ class SequenceDataset(Dataset):
         self.material_to_idx = {material: idx for idx, material in enumerate(physics.materials)}
         
         for i in range(num_sequences):
-            time_orig = data[f'time_{i}'].flatten()
-            initial_time = np.array([physics.initial_time])
-            time_with_initial = np.concatenate([initial_time, time_orig])
-            dt = time_with_initial[1:] - time_with_initial[:-1]
-            
             voltage_data = data[f'v_{i}'].flatten()
-            formatted_voltage = np.array([format_voltage(v) for v in voltage_data], dtype=np.float32)
+            formatted_voltage = np.array([format_voltage(v) for v in voltage_data], dtype=np.float64)
             
             sequence = {
-                'time': torch.FloatTensor(time_orig),
-                'dt': torch.FloatTensor(dt),
-                'voltage': torch.tensor(formatted_voltage, dtype=torch.float32),
-                'current': torch.FloatTensor(data[f'current_{i}'].flatten()),
+                'native': (data[f'time_{i}'].flatten().astype(np.float64), formatted_voltage,
+                           data[f'current_{i}'].flatten().astype(np.float64)),
                 'material': data[f'material_{i}'][0],
                 'material_idx': torch.tensor(self.material_to_idx[data[f'material_{i}'][0]])
             }
-            voltage_val = format_voltage(sequence['voltage'][-1])
+            voltage_val = format_voltage(formatted_voltage[-1])
             sequence_voltage_map[i] = voltage_val
             self.sequences.append(sequence)
         
@@ -238,11 +243,30 @@ class SequenceDataset(Dataset):
             rng.shuffle(final_indices)
             
         self.sequences = [self.sequences[i] for i in final_indices]
+        self._to_shared_grid(physics)
         
         if fit_scaler:
             self.scalers = self._fit_scalers()
             self._apply_scaling()
             
+    def _to_shared_grid(self, physics):
+        """Resample onto the shared grid; the gap is simulated on the native grid first."""
+        reference = None
+        for seq in self.sequences:
+            time, voltage, current = seq.pop('native')
+            grid = shared_time_grid(time)
+            if reference is None:
+                reference = grid
+            elif len(grid) != len(reference) or not np.allclose(grid, reference, rtol=1e-9, atol=0):
+                raise ValueError('All sequences must share the ramp sample times and the end time to use one time grid')
+            dt = np.diff(np.concatenate([[physics.initial_time], time]))
+            gap = physics.simulate(torch.from_numpy(dt), torch.from_numpy(voltage), torch.from_numpy(current), seq['material'])
+            seq['time'] = torch.FloatTensor(grid)
+            seq['dt'] = torch.FloatTensor(np.diff(np.concatenate([[physics.initial_time], grid])))
+            seq['voltage'] = torch.FloatTensor(np.interp(grid, time, voltage))
+            seq['current'] = torch.FloatTensor(np.interp(grid, time, current))
+            seq['gap'] = torch.FloatTensor(np.interp(grid, time, gap.numpy()))
+
     def _fit_scalers(self):
         scalers = {}
         

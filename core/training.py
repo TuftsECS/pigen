@@ -5,14 +5,11 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from datetime import datetime
-from .cache import PhysicsSimulationCache
 from .metrics import log_errors, summarize_records, switching_errors
 from .plotting import plot_state_sequence
 
 # Leading samples of every sequence (the voltage ramp-up) that are excluded from model inputs and losses.
 RAMP_SAMPLES = 2
-
-_physics_cache = PhysicsSimulationCache()
 
 class DynamicGradientClipper:
     def __init__(self, initial_max_norm=1.0, momentum=0.95):
@@ -86,9 +83,8 @@ def setup_logger(save_dir: str, exp_name: str) -> logging.Logger:
     
     return logger
 
-def current_loss(pred_current, current, scalers, loss_type='mse'):
-    """Current data loss from standardized prediction and target: 'mse' of the standardized current, 'relative' (mean squared
-    pointwise relative error) or 'log' (MSE of ln|current|)."""
+def current_loss(pred_current, current, scalers, loss_type='relative'):
+    """'mse' of the standardized current, 'relative' squared error, or 'log' (MSE of ln|current|)."""
     if loss_type == 'mse':
         return F.mse_loss(pred_current, current)
     scale, mean = float(scalers['current'].scale_[0]), float(scalers['current'].mean_[0])
@@ -131,14 +127,11 @@ def prepare_sequence(sequence, scalers, device):
         'dt_real_full': dt_real_full,
         'voltage_real_full': to_real('voltage', voltage_full),
         'current_real_full': to_real('current', current_full),
+        'gap': sequence['gap'][RAMP_SAMPLES:].to(device),
     }
 
-def physical_state(physics, s):
-    full = _physics_cache.simulate(physics, s['dt_real_full'], s['voltage_real_full'], s['current_real_full'], s['material'])
-    return full[RAMP_SAMPLES:]
-
 def train_epoch(pinn_model, mlp_model, dataset, pinn_optimizer, mlp_optimizer, physics, scalers,
-                use_pde=True, pde_scheduler=None, loss_type='mse'):
+                use_pde=True, pde_scheduler=None, loss_type='relative'):
     pinn_model.train()
     mlp_model.train() 
     
@@ -169,7 +162,7 @@ def train_epoch(pinn_model, mlp_model, dataset, pinn_optimizer, mlp_optimizer, p
         pinn_optimizer.zero_grad()
         state = pinn_model(*inputs)
         if use_pde:
-            pde_loss = state_loss(state, physical_state(physics, s), physics)
+            pde_loss = state_loss(state, s['gap'], physics)
 
         pred_current = mlp_model(state, s['voltage'], s['initial_current'], s['material_idx'])
         data_loss = current_loss(pred_current, s['current'], scalers, loss_type)
@@ -208,7 +201,7 @@ def train_epoch(pinn_model, mlp_model, dataset, pinn_optimizer, mlp_optimizer, p
             })
     
 def validate_epoch(pinn_model, mlp_model, dataset, physics, scalers, use_pde=True, pde_scheduler=None, save_dir=None,
-                   loss_type='mse'):
+                   loss_type='relative'):
     pinn_model.eval()
     mlp_model.eval()
     
@@ -229,7 +222,7 @@ def validate_epoch(pinn_model, mlp_model, dataset, physics, scalers, use_pde=Tru
             pred_current = mlp_model(state, s['voltage'], s['initial_current'], s['material_idx'])
             mlp_loss = current_loss(pred_current, s['current'], scalers, loss_type)
             
-            state_phys = physical_state(physics, s)
+            state_phys = s['gap']
             pde_weight = pde_scheduler.get_weight() if pde_scheduler else 1.0
             pinn_loss = mlp_loss + pde_weight * state_loss(state, state_phys, physics)
 

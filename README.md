@@ -84,6 +84,8 @@ Each sequence `i` should have the following keys:
 
 where `N` is the number of time steps per sequence and `i` is a zero-indexed sequence identifier. The total number of sequences is inferred from the number of `time_*` keys in the file. The first two samples of each sequence are the voltage ramp-up and are not used as model inputs.
 
+At load time every sequence is resampled onto one shared time grid: the two ramp samples, 100 log-spaced points per decade from the first plateau sample until the step reaches 1 ns, then 1 ns steps to the last sample (1294 points for `rram.mat`). The simulator's adaptive grid refines around each switch, so on the native grid the time and time-step inputs would reveal the switching time. All sequences must therefore share the ramp sample times and the end time. The physical state supervising the PINN is simulated on the native grid and then resampled, and all metrics are computed on the shared grid.
+
 ## Usage
 
 Run all commands from the repository root.
@@ -112,7 +114,7 @@ python train.py --data_path data/rram.mat --exp_name my_experiment --use_pde --v
 | `--lr_patience` | 20 | Epochs without training-loss improvement before halving the learning rate |
 | `--min_lr` | 1e-6 | Learning-rate floor |
 | `--early_stop_patience` | 200 | Epochs without a new best checkpoint (validation balanced score) before stopping |
-| `--current_loss` | `mse` | Current data loss: `mse` of the standardized current, `relative` (mean squared pointwise relative error) or `log` (MSE of ln\|current\|) |
+| `--current_loss` | `relative` | Current data loss: `mse` of the standardized current, `relative` (mean squared pointwise relative error) or `log` (MSE of ln\|current\|) |
 | `--hidden_size` | 128 | Hidden layer size |
 
 **Validation metrics** (logged every epoch):
