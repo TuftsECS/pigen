@@ -73,7 +73,7 @@ class StatePINN(nn.Module):
     
 class CurrentReadout(nn.Module):
     def __init__(self, num_materials, hidden_size=32, embedding_size=8, current_mean=0.0, current_scale=1.0):
-        """Predicts current as I_init * exp(net(...)) in real units; current_mean/scale undo the current standardization."""
+        """Predicts current as I_init * exp(net(t) - net(t0)) in real units; current_mean/scale undo the current standardization."""
         super().__init__()
         self.hidden_size = hidden_size
         self.embedding_size = embedding_size
@@ -97,6 +97,7 @@ class CurrentReadout(nn.Module):
         
         x = torch.cat([state.unsqueeze(-1), v.unsqueeze(-1), initial_I.unsqueeze(-1), material_emb], dim=-1)
         log_ratio = self.net(x).squeeze(-1)
+        log_ratio = log_ratio - log_ratio[0]
         initial_I_real = initial_I * self.current_scale + self.current_mean
         current_real = initial_I_real * torch.exp(log_ratio.clamp(-10, 10))
         return (current_real - self.current_mean) / self.current_scale
