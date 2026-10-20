@@ -113,6 +113,7 @@ python train.py --data_path data/rram.mat --exp_name my_experiment --use_pde --v
 | `--min_lr` | 1e-6 | Learning-rate floor |
 | `--early_stop_patience` | 200 | Epochs without a new best checkpoint (validation balanced score) before stopping |
 | `--current_loss` | `relative` | Current data loss: `mse` of the standardized current, `relative` (mean squared pointwise relative error) or `log` (MSE of ln\|current\|) |
+| `--readout` | `anchor` | Current readout reference at the first sample: `anchor` (predicted first state), `g` (physical initial state) or `gm` (`g` with a log current that decreases linearly in the state) |
 | `--hidden_size` | 128 | Hidden layer size |
 
 **Validation metrics** (logged every epoch):

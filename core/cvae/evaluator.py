@@ -34,7 +34,8 @@ class DeviceEvaluator:
         hidden_size = state['gru.weight_hh_l0'].shape[1]
         
         pinn_model = StatePINN(len(self.materials), hidden_size=hidden_size, embedding_size=embedding_size).to(self.device)
-        mlp_model = CurrentReadout(len(self.materials), hidden_size=hidden_size, embedding_size=embedding_size).to(self.device)
+        mlp_model = CurrentReadout(len(self.materials), hidden_size=hidden_size, embedding_size=embedding_size,
+                                   readout=checkpoint.get('readout', 'anchor')).to(self.device)
         
         pinn_model.load_state_dict(checkpoint['pinn_model_state_dict'])
         mlp_model.load_state_dict(checkpoint['mlp_model_state_dict'])
@@ -74,7 +75,8 @@ class DeviceEvaluator:
         
         with torch.no_grad():
             state = self.pinn_model(s['time'], s['dt_real'], s['voltage'], s['material_idx'])
-            pred_current = self.mlp_model(state, s['voltage'], s['initial_current'], s['material_idx'])
+            pred_current = self.mlp_model(state, s['voltage'], s['initial_current'], s['material_idx'],
+                                          self.physics.initial_state(float(s['voltage_real_full'][-1])))
             pred_current_real = pred_current * current_scale + current_mean
 
         return (s['time_real_full'][RAMP_SAMPLES:], s['dt_real'], s['voltage_real_full'][RAMP_SAMPLES:],

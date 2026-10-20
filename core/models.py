@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 def init_weights(module):
     if isinstance(module, nn.Linear):
@@ -72,16 +73,18 @@ class StatePINN(nn.Module):
 
     
 class CurrentReadout(nn.Module):
-    def __init__(self, num_materials, hidden_size=32, embedding_size=8, current_mean=0.0, current_scale=1.0):
-        """Predicts current as I_init * exp(net(t) - net(t0)) in real units; current_mean/scale undo the current standardization."""
+    def __init__(self, num_materials, hidden_size=32, embedding_size=8, current_mean=0.0, current_scale=1.0, readout='anchor'):
+        """Predicts current as I_init * exp(net(t) - net(t0)); 'g' sets the t0 state to the physical initial state, 'gm' also
+        makes the log current decrease linearly in the state with a learned slope. current_mean/scale undo the standardization."""
         super().__init__()
+        self.readout = readout
         self.hidden_size = hidden_size
         self.embedding_size = embedding_size
         self.register_buffer('current_mean', torch.tensor(float(current_mean)))
         self.register_buffer('current_scale', torch.tensor(float(current_scale)))
         self.material_embedding = nn.Embedding(num_materials, self.embedding_size)
 
-        input_size = self.embedding_size + 3  # material_emb + state + voltage + initial_I
+        input_size = self.embedding_size + (2 if readout == 'gm' else 3)  # material_emb + [state] + voltage + initial_I
         
         self.net = nn.Sequential(
             nn.Linear(input_size, hidden_size),
@@ -91,13 +94,21 @@ class CurrentReadout(nn.Module):
         )
         self.apply(init_weights)
    
-    def forward(self, state, v, initial_I, material_idx):
+    def forward(self, state, v, initial_I, material_idx, initial_state=None):
         material_emb = self.material_embedding(material_idx)
         material_emb = material_emb.expand(len(state), -1)
-        
-        x = torch.cat([state.unsqueeze(-1), v.unsqueeze(-1), initial_I.unsqueeze(-1), material_emb], dim=-1)
-        log_ratio = self.net(x).squeeze(-1)
-        log_ratio = log_ratio - log_ratio[0]
+        if self.readout != 'anchor':
+            if initial_state is None:
+                raise ValueError(f"readout '{self.readout}' needs the physical initial state")
+            state = torch.cat([state.new_tensor([initial_state]), state[1:]])
+
+        if self.readout == 'gm':
+            x = torch.cat([v.unsqueeze(-1), initial_I.unsqueeze(-1), material_emb], dim=-1)
+            log_ratio = F.softplus(self.net(x).squeeze(-1)) * (state[0] - state)
+        else:
+            x = torch.cat([state.unsqueeze(-1), v.unsqueeze(-1), initial_I.unsqueeze(-1), material_emb], dim=-1)
+            log_ratio = self.net(x).squeeze(-1)
+            log_ratio = log_ratio - log_ratio[0]
         initial_I_real = initial_I * self.current_scale + self.current_mean
         current_real = initial_I_real * torch.exp(log_ratio.clamp(-10, 10))
         return (current_real - self.current_mean) / self.current_scale

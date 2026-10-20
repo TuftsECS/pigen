@@ -35,6 +35,8 @@ def get_args():
     parser.add_argument('--early_stop_patience', type=int, default=200, help='Epochs without a new best checkpoint before stopping')
     parser.add_argument('--current_loss', choices=['mse', 'relative', 'log'], default='relative',
                         help='Current data loss: MSE of the standardized current, squared relative error, or MSE of ln|current|')
+    parser.add_argument('--readout', choices=['anchor', 'g', 'gm'], default='anchor',
+                        help='Current readout reference: predicted first state, physical initial state (g), or g with a monotone readout (gm)')
     parser.add_argument('--hidden_size', type=int, default=128)
     parser.add_argument('--embedding_size', type=int, default=5)
     args = parser.parse_args()
@@ -97,7 +99,8 @@ def main():
     num_materials = len(physics.materials)
     pinn_model = StatePINN(num_materials, hidden_size=config['hidden_size'], embedding_size=config['embedding_size']).to(device)
     mlp_model = CurrentReadout(num_materials, hidden_size=config['hidden_size'], embedding_size=config['embedding_size'],
-                               current_mean=scalers['current'].mean_[0], current_scale=scalers['current'].scale_[0]).to(device)
+                               current_mean=scalers['current'].mean_[0], current_scale=scalers['current'].scale_[0],
+                               readout=config['readout']).to(device)
     pinn_optimizer, mlp_optimizer = configure_optimizers(pinn_model, mlp_model, config)
 
     plateau_kwargs = dict(mode='min', factor=0.5, patience=config['lr_patience'],

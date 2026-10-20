@@ -152,12 +152,13 @@ def train_epoch(pinn_model, mlp_model, dataset, pinn_optimizer, mlp_optimizer, p
     for idx in torch.randperm(len(dataset)).tolist():
         s = prepare_sequence(dataset[idx], scalers, device)
         inputs = (s['time'], s['dt_real'], s['voltage'], s['material_idx'])
+        initial_state = physics.initial_state(float(s['voltage_real_full'][-1]))
 
         with torch.no_grad():
             state = pinn_model(*inputs)
 
         mlp_optimizer.zero_grad()
-        pred_current = mlp_model(state, s['voltage'], s['initial_current'], s['material_idx'])
+        pred_current = mlp_model(state, s['voltage'], s['initial_current'], s['material_idx'], initial_state)
         mlp_loss = current_loss(pred_current, s['current'], scalers, loss_type)
         mlp_loss.backward()
         if mlp_clipper.update(mlp_model.parameters()) is not None:
@@ -170,7 +171,7 @@ def train_epoch(pinn_model, mlp_model, dataset, pinn_optimizer, mlp_optimizer, p
         if use_pde:
             pde_loss = state_loss(state, physical_state(physics, s), physics)
 
-        pred_current = mlp_model(state, s['voltage'], s['initial_current'], s['material_idx'])
+        pred_current = mlp_model(state, s['voltage'], s['initial_current'], s['material_idx'], initial_state)
         data_loss = current_loss(pred_current, s['current'], scalers, loss_type)
 
         if use_pde:
@@ -222,10 +223,11 @@ def validate_epoch(pinn_model, mlp_model, dataset, physics, scalers, use_pde=Tru
     for sequence_idx, sequence in enumerate(dataset):
         s = prepare_sequence(sequence, scalers, device)
         time_real = s['time_real_full'][RAMP_SAMPLES:]
+        initial_state = physics.initial_state(float(s['voltage_real_full'][-1]))
         
         with torch.no_grad():
             state = pinn_model(s['time'], s['dt_real'], s['voltage'], s['material_idx'])
-            pred_current = mlp_model(state, s['voltage'], s['initial_current'], s['material_idx'])
+            pred_current = mlp_model(state, s['voltage'], s['initial_current'], s['material_idx'], initial_state)
             mlp_loss = current_loss(pred_current, s['current'], scalers, loss_type)
             
             state_phys = physical_state(physics, s)

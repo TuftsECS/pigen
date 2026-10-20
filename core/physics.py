@@ -29,6 +29,10 @@ class DevicePhysics:
         """Map the physical state onto [-1, 1]."""
         raise NotImplementedError
 
+    def initial_state(self, voltage):
+        """Normalized internal state at the start of a pulse with plateau voltage ``voltage``."""
+        raise NotImplementedError
+
     def endurance(self, current, voltage, dt, material):
         """Endurance [cycles] of one write pulse and a dict of device-specific metrics (inputs as in ``simulate``)."""
         raise NotImplementedError

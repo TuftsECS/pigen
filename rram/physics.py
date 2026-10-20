@@ -56,6 +56,9 @@ class RRAMPhysics(DevicePhysics):
     def normalize_state(self, gap):
         return -1 + (gap - self.gap_min) * (2 / (self.gap_max - self.gap_min))
 
+    def initial_state(self, voltage):
+        return float(self.normalize_state(self.gap_max if voltage > 0 else self.gap_min))
+
     def endurance(self, current, voltage, dt, material):
         return self.endurance_model.calculate_endurance(current, voltage, dt, material)
 
