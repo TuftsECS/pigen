@@ -17,17 +17,17 @@ class EnduranceCalculator:
         self.Tau_th = 2.3e-10         # Effective thermal time constant [s]
         self.material_params = {
             'HfO2': {
-                'Us': switching_barriers['HfO2'],  # Switching barrier = Eag
+                'Us': switching_barriers['HfO2'],
                 'Uf': 1.74,           # Failure barrier > Eag
                 'Cth': 3.1825e-16,    # Effective thermal capacitance [J/K]
             },
             'Al2O3': {
-                'Us': switching_barriers['Al2O3'],  # Switching barrier = Eag
+                'Us': switching_barriers['Al2O3'],
                 'Uf': 1.35,           # Failure barrier > Eag
                 'Cth': 3.112e-16,
             },
             'TiO2': {
-                'Us': switching_barriers['TiO2'],  # Switching barrier = Eag
+                'Us': switching_barriers['TiO2'],
                 'Uf': 1.96,           # Failure barrier > Eag
                 'Cth': 3.3234e-16,
             }
@@ -45,14 +45,14 @@ class EnduranceCalculator:
         return float(peak)
 
     def calculate_run_time(self, voltage: float, temperature: float) -> float:
-        Us_joules = self.material_params[self.current_material]['Us'] * self.q  # Convert eV to Joules
+        Us_joules = self.material_params[self.current_material]['Us'] * self.q
         
         return (2 * self.tox) / (self.f0 * self.a0) * \
             np.exp(Us_joules / (self.kb * temperature)) * \
             np.exp(-self.q * abs(voltage) * self.a0 / (2 * self.kb * temperature * self.tox))
 
     def calculate_failure_time(self, voltage: float, temperature: float) -> float:
-        Uf_joules = self.material_params[self.current_material]['Uf'] * self.q  # Convert eV to Joules
+        Uf_joules = self.material_params[self.current_material]['Uf'] * self.q
         
         return (2 * self.tox) / (self.f0 * self.a0) * \
             np.exp(Uf_joules / (self.kb * temperature)) * \

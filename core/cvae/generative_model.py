@@ -454,12 +454,11 @@ class ParameterRecommender:
         
         return candidates
     
-    def recommend_parameters(self, target_endurance, target_switching_time, target_energy, num_recommendations=5, num_samples=20, energy_penalty_factor=3.0, max_energy_error_ratio=2.0):
+    def recommend_parameters(self, target_endurance, target_switching_time, target_energy, num_recommendations=4, num_samples=20, energy_penalty_factor=3.0, max_energy_error_ratio=2.0):
         """Recommend parameters based on target performance metrics."""
         print("\nGenerating parameter recommendations...")
         
-        num_recommendations = 4
-        num_samples = max(num_samples, num_recommendations * 15)  # increase more sample points to improve diversity
+        num_samples = max(num_samples, num_recommendations * 15)
         
         print(f"Target switching time: {target_switching_time*1e9:.2f} ns")
         
@@ -516,10 +515,14 @@ class ParameterRecommender:
                         'material': material,
                         'pos_voltage': pos_voltage_denorm,
                         'neg_voltage': neg_voltage_denorm,
-                        'set_pulse_width': set_pulse_width,                         'reset_pulse_width': reset_pulse_width,                         'predicted_performance': {
+                        'set_pulse_width': set_pulse_width,
+                        'reset_pulse_width': reset_pulse_width,
+                        'predicted_performance': {
                             'endurance': avg_endurance,
                             'total_switching_time': actual_total_switching_time,
-                            'pos_switching_time': pos_switching_time,                             'neg_switching_time': neg_switching_time,                             'energy': total_energy
+                            'pos_switching_time': pos_switching_time,
+                            'neg_switching_time': neg_switching_time,
+                            'energy': total_energy
                         },
                         'target_performance': {
                             'endurance': target_endurance,
@@ -566,10 +569,14 @@ class ParameterRecommender:
                         'material': material,
                         'pos_voltage': pos_voltage,
                         'neg_voltage': neg_voltage,
-                        'set_pulse_width': set_pulse_width,                         'reset_pulse_width': reset_pulse_width,                         'predicted_performance': {
+                        'set_pulse_width': set_pulse_width,
+                        'reset_pulse_width': reset_pulse_width,
+                        'predicted_performance': {
                             'endurance': avg_endurance,
                             'total_switching_time': actual_total_switching_time,
-                            'pos_switching_time': pos_switching_time,                             'neg_switching_time': neg_switching_time,                             'energy': total_energy
+                            'pos_switching_time': pos_switching_time,
+                            'neg_switching_time': neg_switching_time,
+                            'energy': total_energy
                         },
                         'target_performance': {
                             'endurance': target_endurance,
@@ -733,7 +740,7 @@ class ParameterRecommender:
         voltage_difference_threshold = 0.15
 
         for target_name, sorted_candidates in optimization_targets:
-            if len(final_recommendations) >= 4:
+            if len(final_recommendations) >= num_recommendations:
                 break
 
             if target_name in selected_targets:
@@ -791,7 +798,7 @@ class ParameterRecommender:
                 if not material_candidates:
                     continue
                 
-                if len(final_recommendations) >= 4:
+                if len(final_recommendations) >= num_recommendations:
                     break
                 
                 best_candidate = material_candidates[0]
@@ -815,7 +822,7 @@ class ParameterRecommender:
                         selected_targets.add(target_name)
         
         # Fill remaining slots from top candidates
-        if len(final_recommendations) < 4 and len(candidates) >= 4:
+        if len(final_recommendations) < num_recommendations and len(candidates) >= num_recommendations:
             used_candidates = set((c['material'], c['pos_voltage'], c['neg_voltage']) for c in final_recommendations)
             remaining_candidates = [
                 c for c in candidates 
@@ -827,7 +834,7 @@ class ParameterRecommender:
             unused_targets = set(t[0] for t in optimization_targets) - selected_targets
 
             for candidate in remaining_candidates:
-                if len(final_recommendations) >= 4:
+                if len(final_recommendations) >= num_recommendations:
                     break
                 
                 is_different_enough = True
@@ -837,7 +844,7 @@ class ParameterRecommender:
                         break
                 
                 if is_different_enough:
-                    target_name = next(iter(unused_targets)) if unused_targets else "Material Diversity"
+                    target_name = next(iter(unused_targets)) if unused_targets else "Additional Candidate"
                     
                     final_recommendations.append({
                         **candidate,
@@ -855,4 +862,4 @@ class ParameterRecommender:
                   f"Time={rec['predicted_performance']['total_switching_time']*1e9:.2f}ns, "
                   f"Energy={rec['predicted_performance']['energy']*1e12:.2f}pJ")
         
-        return final_recommendations[:4]
+        return final_recommendations[:num_recommendations]

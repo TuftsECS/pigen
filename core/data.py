@@ -5,7 +5,6 @@ from scipy.io import loadmat
 from sklearn.preprocessing import StandardScaler
 from typing import Optional, Union
 from collections import defaultdict
-import logging
 
 def format_voltage(voltage: Union[float, np.ndarray, torch.Tensor], precision: int = 2) -> float:
     if isinstance(voltage, (np.ndarray, torch.Tensor)):
@@ -22,12 +21,10 @@ class SequenceDataset(Dataset):
         fit_scaler: bool = False,
         is_train: bool = True,
         seed: Optional[int] = None,
-        logger = None,
         split_ratio: float = 0.8,
         use_full_dataset: bool = True,
         voltage_stride: float = 0.2
     ):
-        self.logger = logger if logger is not None else logging.getLogger(__name__)
         self.scalers = None
         
         data = loadmat(data_path)
@@ -65,24 +62,10 @@ class SequenceDataset(Dataset):
         material_to_voltages_map = defaultdict(set)
         material_to_indices_map = defaultdict(list)
         for i, voltage in sequence_voltage_map.items():
-            if i < len(self.sequences):
-                material = self.sequences[i]['material']
-                material_to_voltages_map[material].add(voltage)
-                material_to_indices_map[material].append(i)
-            else:
-                self.logger.warning(f"Index {i} out of bounds when building material maps.")
-        for material in list(material_to_voltages_map.keys()): 
-            sorted_voltages = sorted(list(material_to_voltages_map[material]))
-            if sorted_voltages:
-                material_to_voltages_map[material] = sorted_voltages
-            else:
-                 del material_to_voltages_map[material] 
-                 if material in material_to_indices_map:
-                     del material_to_indices_map[material]
-                 self.logger.info(f"Removed material {material} from maps: No associated voltages found.")
-
-        self.logger.debug(f"Pre-calculated available voltages per material: {material_to_voltages_map}")
-        self.logger.debug(f"Pre-calculated indices per material: {material_to_indices_map}")
+            material = self.sequences[i]['material']
+            material_to_voltages_map[material].add(voltage)
+            material_to_indices_map[material].append(i)
+        material_to_voltages_map = {material: sorted(voltages) for material, voltages in material_to_voltages_map.items()}
 
         rng = np.random.RandomState(seed) if seed is not None else np.random.RandomState()
         
@@ -104,10 +87,7 @@ class SequenceDataset(Dataset):
             for material, material_voltages in material_to_voltages_map.items():
                 material_indices = material_to_indices_map.get(material, [])
                 if not material_voltages or not material_indices:
-                    self.logger.debug(f"Skipping {material}: No voltages or indices found.")
                     continue 
-
-                self.logger.debug(f"Processing {material} (Indices: {len(material_indices)}, Voltages: {len(material_voltages)})" )
 
                 boundaries = material_boundaries.get(material, [])
                 formatted_boundaries_for_material = {format_voltage(b) for b in boundaries}
@@ -124,7 +104,6 @@ class SequenceDataset(Dataset):
                 
                 initial_targets = stepped_voltages_for_material.union(formatted_boundaries_for_material).union(endpoints)
                 filtered_initial_targets = {v for v in initial_targets if v in material_voltages}
-                self.logger.debug(f"  a. Initial targets for {material}: {sorted(list(filtered_initial_targets))}")
 
                 pruned_targets = set(filtered_initial_targets)
                 if len(filtered_initial_targets) >= 2:
@@ -133,7 +112,6 @@ class SequenceDataset(Dataset):
                     current_selection_sorted = sorted(list(filtered_initial_targets))
                     min_gap_factor = 0.75
                     min_allowed_gap = target_step * min_gap_factor
-                    self.logger.debug(f"  b. Pruning {material} (min gap: {min_allowed_gap:.3f}). Mandatory: {mandatory_points}")
 
                     i = 0
                     temp_sorted_list = list(current_selection_sorted)
@@ -163,7 +141,6 @@ class SequenceDataset(Dataset):
                                      point_removed = v2
 
                             if point_removed is not None:
-                                self.logger.debug(f"    Pruning ({material}): Marked {point_removed:.2f} for removal (gap {gap:.3f} < {min_allowed_gap:.3f} between {v1:.2f} and {v2:.2f}).")
                                 if point_removed == v1:
                                     temp_sorted_list.pop(i)
                                     continue 
@@ -173,17 +150,13 @@ class SequenceDataset(Dataset):
                         i += 1
 
                     pruned_targets = filtered_initial_targets - points_to_remove
-                    self.logger.debug(f"  b. Pruned targets for {material}: {sorted(list(pruned_targets))}")
                 else:
-                     self.logger.debug(f"  b. Skipping pruning for {material}: Not enough points.")
                      pruned_targets = filtered_initial_targets
 
                 final_material_target_voltages = set(pruned_targets)
                 if len(pruned_targets) >= 2:
                     current_selection_sorted = sorted(list(pruned_targets))
-                    points_added_count = 0
                     max_gap_threshold = target_step * max_gap_factor
-                    self.logger.debug(f"  c. Filling gaps for {material} > {max_gap_threshold:.3f} V (on pruned set).")
                     
                     processed_indices = set()
                     needs_recheck = True
@@ -206,21 +179,13 @@ class SequenceDataset(Dataset):
                                     closest_available_to_midpoint not in final_material_target_voltages):
                                     
                                     final_material_target_voltages.add(closest_available_to_midpoint)
-                                    points_added_count += 1
-                                    self.logger.debug(f"    Gap Fill ({material}): Added {closest_available_to_midpoint:.2f} between {v1:.2f} and {v2:.2f}")
                                     needs_recheck = True
                                     processed_indices.clear()
                                     break
                             processed_indices.add(i)
-                            
-                    if points_added_count > 0:
-                         self.logger.debug(f"  c. Added {points_added_count} points via gap filling for {material}.")
-                else:
-                    self.logger.debug(f"  c. Skipping gap filling for {material}: Not enough points after pruning.")
 
                 final_voltages_sorted = sorted(list(final_material_target_voltages))
                 self.train_voltages[material] = final_voltages_sorted
-                self.logger.debug(f"  Final target voltages for {material}: {final_voltages_sorted}")
 
                 for idx in material_indices:
                     v = sequence_voltage_map.get(idx)

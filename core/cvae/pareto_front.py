@@ -86,33 +86,16 @@ def generate_pareto_plot(physics,
                         output_dir='recommendation_results',
                         cvae_model_path='recommendation_results/cvae_model.pth',
                         dataset_path='recommendation_results/cvae_dataset.pt',
-                        target_switching_time=10e-9, # s, default 10 ns
-                        target_energy=5e-10,  # J, equivalent to 500 pJ
+                        target_switching_time=10e-9,  # s
+                        target_energy=5e-10,  # J
                         target_endurance=1e5,  # cycles
                         num_sample_points=50,
                         energy_penalty_factor=3.0,
                         max_energy_error_ratio=1.0,
                         min_pulse_width=1e-9,
-                        diverse_candidates=40):
-    """
-    Generate the energy-latency Pareto front plot of one device, evaluated with its trained PINN
-    
-    Parameters:
-        physics: Device physics core (a core.physics.DevicePhysics), e.g. rram.Physics()
-        model_path: Path to the trained PINN checkpoint
-        data_path: Path to the device dataset
-        output_dir: Output directory
-        cvae_model_path: Path to CVAE model
-        dataset_path: Path to CVAE dataset
-        target_switching_time: Target switching time (s)
-        target_energy: Target energy consumption (J)
-        target_endurance: Target endurance (cycles)
-        num_sample_points: Number of sample points to generate for each material
-        energy_penalty_factor: Penalty factor for exceeding target energy in recommendations
-        max_energy_error_ratio: Maximum allowed ratio of predicted energy over target energy for recommendations
-        min_pulse_width: Minimum pulse width for recommendations (default: 1ns)
-        diverse_candidates: Number of diverse candidates for recommendation generation (default: 40)
-    """
+                        diverse_candidates=40,
+                        num_recommendations=4):
+    """Energy-latency Pareto front of one device, evaluated with its trained PINN; arguments as in generate.py."""
     os.makedirs(output_dir, exist_ok=True)
 
     print("Initializing device evaluator...")
@@ -147,7 +130,7 @@ def generate_pareto_plot(physics,
             target_endurance,
             target_switching_time,
             target_energy,
-            num_recommendations=3,
+            num_recommendations=num_recommendations,
             num_samples=diverse_candidates,
             energy_penalty_factor=energy_penalty_factor,
             max_energy_error_ratio=float('inf') if max_energy_error_ratio < 0 else max_energy_error_ratio

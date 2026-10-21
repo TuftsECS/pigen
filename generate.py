@@ -64,7 +64,8 @@ def main():
             energy_penalty_factor=args.energy_penalty_factor,
             max_energy_error_ratio=args.max_energy_error_ratio,
             min_pulse_width=args.min_pulse_width,
-            diverse_candidates=args.diverse_candidates
+            diverse_candidates=args.diverse_candidates,
+            num_recommendations=args.num_recommendations
         )
     else:
         print("--- Running CVAE Parameter Recommendation ---")

@@ -33,10 +33,6 @@ def get_args():
     parser.add_argument('--lr_patience', type=int, default=20, help='Epochs without train loss improvement before halving LR')
     parser.add_argument('--min_lr', type=float, default=1e-6, help='LR floor')
     parser.add_argument('--early_stop_patience', type=int, default=200, help='Epochs without a new best checkpoint before stopping')
-    parser.add_argument('--current_loss', choices=['mse', 'relative', 'log'], default='relative',
-                        help='Current data loss: MSE of the standardized current, squared relative error, or MSE of ln|current|')
-    parser.add_argument('--readout', choices=['anchor', 'g', 'gm'], default='anchor',
-                        help='Current readout reference: predicted first state, physical initial state (g), or g with a monotone readout (gm)')
     parser.add_argument('--hidden_size', type=int, default=128)
     parser.add_argument('--embedding_size', type=int, default=5)
     args = parser.parse_args()
@@ -88,7 +84,7 @@ def main():
     else:
         logger.info("Mode: no PDE")
     
-    split = dict(physics=physics, seed=config['seed'], logger=logger,
+    split = dict(physics=physics, seed=config['seed'],
                  use_full_dataset=config['use_full_dataset'], voltage_stride=config['voltage_stride'])
     train_dataset = SequenceDataset(config['data_path'], fit_scaler=True, is_train=True, **split)
     val_dataset = SequenceDataset(config['data_path'], fit_scaler=False, is_train=False, **split)
@@ -99,8 +95,7 @@ def main():
     num_materials = len(physics.materials)
     pinn_model = StatePINN(num_materials, hidden_size=config['hidden_size'], embedding_size=config['embedding_size']).to(device)
     mlp_model = CurrentReadout(num_materials, hidden_size=config['hidden_size'], embedding_size=config['embedding_size'],
-                               current_mean=scalers['current'].mean_[0], current_scale=scalers['current'].scale_[0],
-                               readout=config['readout']).to(device)
+                               current_mean=scalers['current'].mean_[0], current_scale=scalers['current'].scale_[0]).to(device)
     pinn_optimizer, mlp_optimizer = configure_optimizers(pinn_model, mlp_model, config)
 
     plateau_kwargs = dict(mode='min', factor=0.5, patience=config['lr_patience'],
@@ -118,10 +113,10 @@ def main():
 
         train_mlp_loss, train_pinn_loss, train_metrics = train_epoch(
             pinn_model, mlp_model, train_dataset, pinn_optimizer, mlp_optimizer, physics, scalers,
-            use_pde=config['use_pde'], pde_scheduler=pde_scheduler, loss_type=config['current_loss'])
+            use_pde=config['use_pde'], pde_scheduler=pde_scheduler)
         val_metrics = validate_epoch(
             pinn_model, mlp_model, val_dataset, physics, scalers,
-            use_pde=config['use_pde'], pde_scheduler=pde_scheduler, loss_type=config['current_loss'])
+            use_pde=config['use_pde'], pde_scheduler=pde_scheduler)
 
         logger.info(
             f"Epoch [{epoch+1}/{config['epochs']}]:\n"
@@ -139,7 +134,7 @@ def main():
             save_checkpoint(config['save_dir'], epoch, pinn_model, mlp_model, pinn_optimizer, mlp_optimizer, val_metrics, scalers)
             logger.info(f"New best checkpoint: balanced score {score[0]:.6g}, TB log-MAE {score[1]:.6g} (saved)")
             validate_epoch(pinn_model, mlp_model, val_dataset, physics, scalers, use_pde=config['use_pde'],
-                           pde_scheduler=pde_scheduler, save_dir=config['save_dir'], loss_type=config['current_loss'])
+                           pde_scheduler=pde_scheduler, save_dir=config['save_dir'])
 
         if epoch + 1 >= config['warmup_epochs']:
             pinn_scheduler.step(train_mlp_loss)

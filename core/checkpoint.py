@@ -24,8 +24,7 @@ def save_checkpoint(save_dir, epoch, pinn_model, mlp_model, pinn_optimizer, mlp_
         'pinn_optimizer_state_dict': pinn_optimizer.state_dict(),
         'mlp_optimizer_state_dict': mlp_optimizer.state_dict(),
         'valid_metrics': val_metrics,
-        'scalers': scalers,
-        'readout': mlp_model.readout,
+        'scalers': scalers
     }
     torch.save(checkpoint, os.path.join(save_dir, 'best_checkpoint.pth'))
 
