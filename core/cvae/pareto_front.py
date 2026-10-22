@@ -5,6 +5,9 @@ import pandas as pd
 import torch
 import os
 import matplotlib.ticker as ticker
+from functools import partial
+from matplotlib.backends.backend_agg import RendererAgg
+from matplotlib.transforms import Bbox
 
 from .generative_model import ParameterRecommender
 from .evaluator import DeviceEvaluator
@@ -79,6 +82,29 @@ def calculate_size_for_endurance(endurance):
     log_endurance = np.log10(endurance)
     size_factor = 8
     return size_factor * (log_endurance ** 2.2)
+
+class PlainLogFormatter(ticker.LogFormatter):
+    """LogFormatter that writes the labels it keeps as plain numbers."""
+
+    def __call__(self, x, pos=None):
+        return f'{x:.15g}' if super().__call__(x, pos) else ''
+
+def place_clear(ax, make, candidates, points, radii, avoid):
+    """Draw make(**candidate) for the candidate inside the axes with the fewest `avoid` overlaps, then the fewest covered points."""
+    renderer = RendererAgg(ax.figure.bbox.width, ax.figure.bbox.height, ax.figure.dpi)
+    centers = ax.transData.transform(points)
+    blocked = [item if isinstance(item, Bbox) else item.get_window_extent(renderer) for item in avoid]
+
+    def cost(candidate):
+        probe = make(**candidate)
+        box = probe.get_window_extent(renderer)
+        probe.remove()
+        outside = not (ax.bbox.x0 <= box.x0 and box.x1 <= ax.bbox.x1 and ax.bbox.y0 <= box.y0 and box.y1 <= ax.bbox.y1)
+        covered = np.sum((centers[:, 0] + radii > box.x0) & (centers[:, 0] - radii < box.x1)
+                         & (centers[:, 1] + radii > box.y0) & (centers[:, 1] - radii < box.y1))
+        return int(outside) + box.count_overlaps(blocked), int(covered)
+
+    return make(**min(candidates, key=cost))
 
 def generate_pareto_plot(physics,
                         data_path,
@@ -270,20 +296,25 @@ def generate_pareto_plot(physics,
                     edgecolor=colors[material]['edge'],
                     alpha=0.9,
                     linewidth=2,
-                    marker='*'
+                    marker='*',
+                    zorder=4
                 )
             
-            recommendation_mask = material_data['is_recommendation'].fillna(False)
-            for idx, row in material_data[recommendation_mask].iterrows():
-                if row['is_recommendation'] and row.get('rec_num') == 1:
-                    ax.annotate(
-                        f"#1",
-                        (row['energy'], row['switching_time_ns']),
-                        xytext=(10, 0),
-                        textcoords='offset points',
-                        fontsize=16,
-                        fontweight='bold'
-                    )
+            other_points = material_data[material_data['is_other_recommendation']]
+            if not other_points.empty:
+                sizes = other_points['endurance'].apply(calculate_size_for_endurance) * 0.5
+                
+                ax.scatter(
+                    other_points['energy'],
+                    other_points['switching_time_ns'],
+                    s=sizes,
+                    color=colors[material]['fill'],
+                    edgecolor=colors[material]['edge'],
+                    alpha=0.9,
+                    linewidth=2,
+                    marker='D',
+                    zorder=3
+                )
         
         # Compute Pareto front via dominance check
         df_non_dominated = df.copy()
@@ -333,33 +364,56 @@ def generate_pareto_plot(physics,
         ax.yaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=4))
         ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(2, 10) * 0.1, numticks=10))
         ax.yaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(2, 10) * 0.1, numticks=10))
+        ax.xaxis.set_major_formatter(PlainLogFormatter())
+        ax.xaxis.set_minor_formatter(PlainLogFormatter())
         
         x_min, x_max, y_min, y_max = get_safe_axis_limits(df, target_energy_pJ, target_switching_time_ns)
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
         
         try:
-            ax.text(
-                target_energy_pJ * 1.05,
-                y_min * 1.1,
-                'Target Energy',
-                color=COLORS['target'],
-                fontsize=16,
-                fontweight='bold',
-                rotation=90,
-                va='bottom'
-            )
-            ax.text(
-                x_min * 1.05,
-                target_switching_time_ns * 1.05,
-                'Target Latency',
-                color=COLORS['target'],
-                fontsize=16,
-                fontweight='bold',
-                ha='left'
+            points = np.column_stack([df['energy'], df['switching_time_ns']])
+            radii_pt = 0.5 * np.sqrt(df['endurance'].apply(calculate_size_for_endurance).to_numpy()
+                                     * np.where(df['is_recommendation'], 1.5, 1.0)) + 1
+            radii = radii_pt * fig.dpi / 72
+            x_line, y_line = ax.transData.transform((target_energy_pJ, target_switching_time_ns))
+            pad = fig.dpi / 72
+            labels = [Bbox.from_extents(x_line - pad, ax.bbox.y0, x_line + pad, ax.bbox.y1),
+                      Bbox.from_extents(ax.bbox.x0, y_line - pad, ax.bbox.x1, y_line + pad)]
+            style = dict(textcoords='offset points', annotation_clip=False, fontsize=16, fontweight='bold')
+            recommended = (df['is_recommendation'] | df['is_other_recommendation']).to_numpy(dtype=bool)
+            for (_, row), gap in zip(df[recommended].iterrows(), radii_pt[recommended] + 3):
+                labels.append(place_clear(
+                    ax,
+                    partial(ax.annotate, f"#{int(row['rec_num'])}", (row['energy'], row['switching_time_ns']), **style),
+                    [dict(xytext=(gap, 0), ha='left', va='center'),
+                     dict(xytext=(-gap, 0), ha='right', va='center'),
+                     dict(xytext=(0, gap), ha='center', va='bottom'),
+                     dict(xytext=(0, -gap), ha='center', va='top')],
+                    points, radii, labels
+                ))
+            energy_anchors = [(y_min, 6, 'bottom'), (y_max, -6, 'top'),
+                              *((y_min * (y_max / y_min) ** f, 0, 'center') for f in (0.25, 0.5, 0.75))]
+            labels.append(place_clear(
+                ax,
+                partial(ax.annotate, 'Target Energy', color=COLORS['target'], **style),
+                [dict(xy=(target_energy_pJ, y), xytext=(dx, dy), ha=ha, va=va, rotation=90)
+                 for dx, ha in ((6, 'left'), (-6, 'right')) for y, dy, va in energy_anchors]
+                + [dict(xy=(target_energy_pJ, y), xytext=(dx, dy), ha=ha, va=va, rotation=0)
+                   for y, dy, va in ((y_max, -6, 'top'), (y_min, 6, 'bottom')) for dx, ha in ((6, 'left'), (-6, 'right'))],
+                points, radii, labels
+            ))
+            latency_anchors = [(x_min, 6, 'left'), (target_energy_pJ, -6, 'right'), (target_energy_pJ, 6, 'left'), (x_max, -6, 'right'),
+                               *((x_min * (x_max / x_min) ** f, 0, 'center') for f in (0.25, 0.5, 0.75))]
+            place_clear(
+                ax,
+                partial(ax.annotate, 'Target Latency', color=COLORS['target'], **style),
+                [dict(xy=(x, target_switching_time_ns), xytext=(dx, dy), ha=ha, va=va)
+                 for dy, va in ((4, 'bottom'), (-4, 'top')) for x, dx, ha in latency_anchors],
+                points, radii, labels
             )
         except Exception as e:
-            print(f"Warning: Could not add target labels: {e}")
+            print(f"Warning: Could not add labels: {e}")
 
         ax.grid(True, linestyle='--', alpha=0.3)
         
@@ -369,11 +423,14 @@ def generate_pareto_plot(physics,
               for material in materials],
             Line2D([0], [0], marker='*', color='w', markerfacecolor='gray', markersize=15, label='Best Overall', linestyle='None'),
         ]
+        if df['is_other_recommendation'].any():
+            legend_elements.append(Line2D([0], [0], marker='D', color='w', markerfacecolor='gray', markersize=10,
+                                          label='Other Recommendations', linestyle='None'))
         
         ax.legend(
             handles=legend_elements, 
-            loc='upper center',
-            bbox_to_anchor=(0.35, 1.2),
+            loc='lower right',
+            bbox_to_anchor=(0.65, 1.02),
             ncol=2,
             framealpha=0.9,
             columnspacing=1.0
@@ -384,10 +441,11 @@ def generate_pareto_plot(physics,
         ax_endurance.set_xlim(0, 1)
         ax_endurance.set_ylim(0, 1)
         ax_endurance.set_axis_off()
-        # Up to four whole decades spanning the plotted endurance range.
+        # Up to four evenly spaced whole decades spanning the plotted endurance range.
         log_endurance = np.log10(df['endurance'])
         low, high = int(np.floor(log_endurance.min())), int(np.ceil(log_endurance.max()))
-        decades = np.unique(np.round(np.linspace(low, high, min(4, high - low + 1)))).astype(int)
+        step = max(1, int(np.ceil((high - low) / 3)))
+        decades = np.arange(low, high + step, step)
         endurance_values = [10.0 ** d for d in decades]
         endurance_labels = [f'$10^{{{d}}}$' for d in decades]
         x_positions = np.linspace(0.1, 0.9, len(endurance_values))
