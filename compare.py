@@ -6,6 +6,7 @@ Run from the repository root:
   python compare.py run ... --dry_run                            # only print what would run
   python compare.py run ... -- --epochs 500 --hidden_size 64     # arguments after -- go to every train.py call
   python compare.py summarize --out results/compare              # PDE vs no-PDE, paired by seed
+  python compare.py summarize --out results/compare --part test  # the same on the test records of group splits
 """
 import argparse
 import itertools
@@ -21,15 +22,18 @@ import numpy as np
 REPO = Path(__file__).resolve().parent
 # Shared dataset on the Tufts HPC cluster.
 DEFAULT_DATA = '/cluster/tufts/donatolab/shared/datasets/pigen/rram.mat'
-SPLIT_PATTERN = re.compile(r'full|stride_\d*\.?\d+')
-SELECTED_PATTERN = re.compile(
-    r"Selected epoch \d+ - Final Current Acc: (\S+)% \(5%\), (\S+)% \(10%\), t90 Acc: (\S+)% \(0\.25 dex\), "
-    r"Joint Pass: ([^,]+), Missed: ([^,]+), False: [^,]+, TB log-MAE: (\S+), Balanced:")
-# Summary columns at each run's selected checkpoint: (label, lower is better), in the order of SELECTED_PATTERN groups.
+SPLIT_PATTERN = re.compile(r'full|stride_\d*\.?\d+|frac_\d*\.?\d+_split_\d+')
+METRICS_PATTERN = (r"Final Current Acc: (\S+)% \(5%\), (\S+)% \(10%\), t90 Acc: (\S+)% \(0\.25 dex\), "
+                   r"Joint Pass: ([^,]+), Missed: ([^,]+), False: ([^,]+), TB log-MAE: (\S+), Balanced:")
+# The selected checkpoint's metrics line on the validation set, on the test set of a group split, and on an --eval_data file.
+PART_PATTERNS = {part: re.compile(prefix + METRICS_PATTERN) for part, prefix in (
+    ('validation', r"Selected epoch \d+ - "), ('test', r"Test at selected epoch \d+ \(\d+ sequences\) - "),
+    ('eval', r"Eval .+ at selected epoch \d+ \(\d+ sequences\) - "))}
+# Summary columns at each run's selected checkpoint: (label, lower is better), in the order of METRICS_PATTERN groups.
 SUMMARY_METRICS = [('final current 5%', False), ('final current 10%', False), ('t90 0.25 dex %', False),
-                   ('joint pass %', False), ('missed switch %', True), ('TB log-MAE', True)]
+                   ('joint pass %', False), ('missed switch %', True), ('false switch %', True), ('TB log-MAE', True)]
 # Columns printed together; the summary is split into blocks to stay readable in a terminal.
-SUMMARY_BLOCKS = [[0, 1, 2], [3, 4, 5]]
+SUMMARY_BLOCKS = [[0, 1, 2], [3, 4, 5, 6]]
 
 
 def build_tasks(args, extra):
@@ -41,7 +45,13 @@ def build_tasks(args, extra):
                '--exp_name', f'{name}_{mode}_{split}_seed_{seed}', '--save_dir', str(save_dir), '--seed', str(seed)]
         if mode == 'pde':
             cmd.append('--use_pde')
-        cmd += ['--use_full_dataset'] if split == 'full' else ['--voltage_stride', split.removeprefix('stride_')]
+        if split == 'full':
+            cmd.append('--use_full_dataset')
+        elif split.startswith('frac_'):
+            fraction, split_seed = split.removeprefix('frac_').split('_split_')
+            cmd += ['--train_fraction', fraction, '--split_seed', split_seed]
+        else:
+            cmd += ['--voltage_stride', split.removeprefix('stride_')]
         tasks.append(cmd + extra)
     return tasks
 
@@ -95,15 +105,18 @@ def run(args, extra):
         sys.exit('Failed runs:\n' + '\n'.join(failed))
 
 
-def selected_metrics(log):
-    match = SELECTED_PATTERN.search(log.read_text()) if log.exists() else None
+def selected_metrics(log, part):
+    match = PART_PATTERNS[part].search(log.read_text()) if log.exists() else None
     if match is None:
         return None
     return [float('nan') if value == 'n/a' else float(value.rstrip('%')) for value in match.groups()]
 
 
 def split_order(split):
-    return (0, 0.0) if split == 'full' else (1, float(split.removeprefix('stride_')))
+    if split == 'full':
+        return (0, 0.0)
+    kind, value = split.split('_')[:2]
+    return (1 if kind == 'stride' else 2, float(value))
 
 
 def summarize(args):
@@ -117,15 +130,15 @@ def summarize(args):
         for split in sorted(splits, key=split_order):
             pairs = []
             for seed_dir in sorted((data_dir / 'pde' / split).glob('seed_*')):
-                pde = selected_metrics(seed_dir / 'training.log')
-                no_pde = selected_metrics(data_dir / 'no_pde' / split / seed_dir.name / 'training.log')
+                pde = selected_metrics(seed_dir / 'training.log', args.part)
+                no_pde = selected_metrics(data_dir / 'no_pde' / split / seed_dir.name / 'training.log', args.part)
                 if pde and no_pde:
                     pairs.append((pde, no_pde))
-            pairs_by_split[split] = pairs
+            pairs_by_split.setdefault(re.sub(r'_split_\d+$', '', split), []).extend(pairs)
 
-        print(f'\n== {data_dir.name}: selected checkpoint, mean over seeds, PDE / no-PDE (seeds where PDE is better)')
+        print(f'\n== {data_dir.name}: selected checkpoint on the {args.part} records, mean over runs, PDE / no-PDE (runs where PDE is better)')
         for block in SUMMARY_BLOCKS:
-            print(f'{"split":<12}{"seeds":>6}  ' + ''.join(f'{SUMMARY_METRICS[j][0]:>28}' for j in block))
+            print(f'{"split":<12}{"runs":>6}  ' + ''.join(f'{SUMMARY_METRICS[j][0]:>28}' for j in block))
             for split, pairs in pairs_by_split.items():
                 if not pairs:
                     print(f'{split:<12}{0:>6}  (no finished PDE/no-PDE pairs)')
@@ -154,7 +167,8 @@ def main():
     run_parser.add_argument('--physics', default='rram', help='Device package providing the physics core')
     run_parser.add_argument('--modes', nargs='+', default=['pde', 'no_pde'], choices=['pde', 'no_pde'])
     run_parser.add_argument('--splits', nargs='+', default=['full', 'stride_0.1', 'stride_0.2', 'stride_0.4', 'stride_0.8'],
-                            help='"full" (random 80/20) or "stride_<voltage step>"')
+                            help='"full" (random 80/20), "stride_<voltage step>" or "frac_<training fraction>_split_<split seed>" '
+                                 '(group split)')
     run_parser.add_argument('--seeds', nargs='+', type=int, default=[42, 43, 44, 45, 46])
     run_parser.add_argument('--out', default='results/compare', help='Results root; one sub-folder per run')
     run_parser.add_argument('--python', default=None,
@@ -174,6 +188,9 @@ def main():
 
     summary_parser = commands.add_parser('summarize', help='Compare finished PDE and no-PDE runs, paired by seed')
     summary_parser.add_argument('--out', default='results/compare', help='Results root used by "run"')
+    summary_parser.add_argument('--part', default='validation', choices=list(PART_PATTERNS),
+                                help='Records the selected checkpoint is scored on: the validation set, the test set of a group split '
+                                     'or the --eval_data file')
 
     args = parser.parse_args(argv)
     if args.command == 'run':

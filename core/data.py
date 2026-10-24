@@ -1,3 +1,5 @@
+import math
+import random
 import torch
 import numpy as np
 from torch.utils.data import Dataset
@@ -11,6 +13,23 @@ def format_voltage(voltage: Union[float, np.ndarray, torch.Tensor], precision: i
         voltage = float(voltage)
     return round(voltage, precision)
 
+def group_split(keys, voltages, split_seed, train_fraction, held_out=0.15):
+    """Train, validation and test indices of a group split: per key, shuffled voltages, 15 % validation, 15 % test, training on a fraction of the rest."""
+    groups = defaultdict(lambda: defaultdict(list))
+    for index, (key, voltage) in enumerate(zip(keys, voltages)):
+        groups[key][voltage].append(index)
+    parts = {'train': [], 'validation': [], 'test': []}
+    rng = random.Random(split_seed)
+    for key in sorted(groups):
+        ordered = sorted(groups[key])
+        rng.shuffle(ordered)
+        n_held = max(1, int(len(ordered) * held_out))
+        pool = ordered[2 * n_held:]
+        for part, chosen in (('validation', ordered[:n_held]), ('test', ordered[n_held:2 * n_held]),
+                             ('train', pool[:max(1, math.ceil(len(pool) * train_fraction))])):
+            parts[part].extend(index for voltage in chosen for index in groups[key][voltage])
+    return {part: sorted(indices) for part, indices in parts.items()}
+
 class SequenceDataset(Dataset):
     """Voltage/current switching sequences of one device, read from a .mat file and split by `physics` conventions."""
 
@@ -23,7 +42,10 @@ class SequenceDataset(Dataset):
         seed: Optional[int] = None,
         split_ratio: float = 0.8,
         use_full_dataset: bool = True,
-        voltage_stride: float = 0.2
+        voltage_stride: float = 0.2,
+        train_fraction: Optional[float] = None,
+        split_seed: int = 0,
+        test: bool = False
     ):
         self.scalers = None
         
@@ -49,6 +71,8 @@ class SequenceDataset(Dataset):
             
             sequence = {
                 'time': torch.FloatTensor(time_orig),
+                'metric_time': time_orig - time_orig[0],
+                'metric_current': data[f'current_{i}'].flatten().astype(np.float64),
                 'dt': torch.FloatTensor(dt),
                 'voltage': torch.tensor(formatted_voltage, dtype=torch.float32),
                 'current': torch.FloatTensor(data[f'current_{i}'].flatten()),
@@ -69,7 +93,12 @@ class SequenceDataset(Dataset):
 
         rng = np.random.RandomState(seed) if seed is not None else np.random.RandomState()
         
-        if use_full_dataset:
+        if train_fraction is not None:
+            amplitudes = [round(float(v[np.argmax(np.abs(v))]), 10) for v in (data[f'v_{i}'].flatten() for i in range(num_sequences))]
+            keys = [(self.sequences[i]['material'], 'set' if amplitudes[i] > 0 else 'reset') for i in range(num_sequences)]
+            parts = group_split(keys, amplitudes, split_seed, train_fraction)
+            final_indices = parts['test' if test else 'train' if is_train else 'validation']
+        elif use_full_dataset:
             all_indices = np.arange(len(self.sequences))
             rng.shuffle(all_indices)
             train_size = int(len(self.sequences) * split_ratio)

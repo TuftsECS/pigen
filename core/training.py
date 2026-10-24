@@ -203,7 +203,7 @@ def train_epoch(pinn_model, mlp_model, dataset, pinn_optimizer, mlp_optimizer, p
                 'skipped_steps': skipped_steps,
             })
     
-def validate_epoch(pinn_model, mlp_model, dataset, physics, scalers, use_pde=True, pde_scheduler=None, save_dir=None):
+def validate_epoch(pinn_model, mlp_model, dataset, physics, scalers, use_pde=True, pde_scheduler=None, save_dir=None, pooled=False):
     pinn_model.eval()
     mlp_model.eval()
     
@@ -217,7 +217,7 @@ def validate_epoch(pinn_model, mlp_model, dataset, physics, scalers, use_pde=Tru
 
     for sequence_idx, sequence in enumerate(dataset):
         s = prepare_sequence(sequence, scalers, device)
-        time_real = s['time_real_full'][RAMP_SAMPLES:]
+        time_real = torch.from_numpy(sequence['metric_time'][RAMP_SAMPLES:])
         initial_state = physics.initial_state(float(s['voltage_real_full'][-1]))
         
         with torch.no_grad():
@@ -230,9 +230,9 @@ def validate_epoch(pinn_model, mlp_model, dataset, physics, scalers, use_pde=Tru
             pinn_loss = mlp_loss + pde_weight * state_loss(state, state_phys, physics)
 
             pred_real = (pred_current * current_scale + current_mean).detach().cpu().numpy()
-            true_real = (s['current'] * current_scale + current_mean).detach().cpu().numpy()
-            time_np = time_real.detach().cpu().numpy()
-            key = (sequence['material'], 'set' if s['voltage_real_full'][-1] > 0 else 'reset')
+            true_real = sequence['metric_current'][RAMP_SAMPLES:]
+            time_np = sequence['metric_time'][RAMP_SAMPLES:]
+            key = 'all' if pooled else (sequence['material'], 'set' if s['voltage_real_full'][-1] > 0 else 'reset')
             groups.setdefault(key, []).append((switching_errors(time_np, true_real, pred_real), log_errors(time_np, true_real, pred_real)))
 
             total_mlp_loss += mlp_loss.item()

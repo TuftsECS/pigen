@@ -82,6 +82,9 @@ python train.py --data_path data/rram.mat --exp_name my_experiment --use_pde --v
 | `--use_pde` | off | Supervise the PINN state with the device physics |
 | `--use_full_dataset` | off | Random 80/20 split instead of a voltage-stride split |
 | `--voltage_stride` | 0.2 | Voltage step between training voltages; the other voltages are validation |
+| `--train_fraction` | off | Group split instead (below; not with `--use_full_dataset` or `--voltage_stride`): train on this fraction (e.g. 0.05, 0.1, 1.0) of the training pool |
+| `--split_seed` | 0 | Seed of the group split |
+| `--eval_data` | off | Also score the selected checkpoint on every sequence of this `.mat` file (e.g. records at new voltages) |
 | `--save_dir` | `checkpoints` | Output directory |
 | `--seed` | 42 | Random seed |
 | `--epochs` | 2000 | Maximum epochs |
@@ -103,11 +106,19 @@ The training loss is the mean squared relative error of the current. Validation 
 | TB log-MAE | Mean \|log10 I\| error, weighted half by time and half by log time |
 | Balanced | Selection score: final-current and t90 errors in units of their tolerances, capped at 4 |
 
-Accuracies and TB log-MAE are averaged over (material, SET/RESET) groups. The checkpoint with the lowest Balanced score is saved to `<save_dir>/best_checkpoint.pth` and reported at the end of the log as `Selected epoch ...`; waveform plots are written to `<save_dir>/<state>_plots/` (ReRAM: `gap_plots/`).
+Accuracies and TB log-MAE are averaged over (material, SET/RESET) groups. The checkpoint with the lowest Balanced score is saved to `<save_dir>/best_checkpoint.pth` and reported at the end of the log as `Selected epoch ...`; waveform plots are written to `<save_dir>/<state>_plots/` (ReRAM: `gap_plots/`). The metrics read the measured current on the time axis of the file, counted from each sequence's first sample.
+
+**Group split.** With `--train_fraction`, the sequences of each (material, SET/RESET) are grouped by voltage and shuffled with `--split_seed`. The first 15 % of the voltages form the validation set and the next 15 % the test set; training uses the given fraction of the remaining voltages. The checkpoint is selected on the validation set only. Once training ends, the selected checkpoint is scored once on the test set and on `--eval_data`, written as `Test at selected epoch ...` and `Eval <file> at selected epoch ...`. Every rate on these two lines pools all sequences.
 
 ### Compare PDE and no-PDE training
 
-`compare.py run` trains every combination of modes (`pde`, `no_pde`), splits (`full`, `stride_<step>`) and seeds into `<out>/<dataset>/<mode>/<split>/seed_<seed>`; arguments after `--` go to every `train.py` call.
+`compare.py run` trains every combination of `--modes` (default `pde no_pde`), `--splits` (default `full stride_0.1 stride_0.2 stride_0.4 stride_0.8`) and `--seeds` (default 42 to 46) into `<out>/<dataset>/<mode>/<split>/seed_<seed>`; arguments after `--` go to every `train.py` call. Each split name sets the split of `train.py`:
+
+| `--splits` value | `train.py` options |
+|---|---|
+| `full` | `--use_full_dataset` |
+| `stride_<step>`, e.g. `stride_0.4` | `--voltage_stride <step>` |
+| `frac_<fraction>_split_<k>`, e.g. `frac_0.1_split_0` | `--train_fraction <fraction> --split_seed <k>` (group split) |
 
 ```bash
 python compare.py run --data data/rram.mat --slurm --dry_run
@@ -117,7 +128,15 @@ python compare.py run --data data/rram.mat --slurm --partition gpu --gres gpu:a1
 python compare.py summarize --out results/compare
 ```
 
-`summarize` prints, per split, `PDE / no-PDE (seeds where PDE is better)` at each run's selected checkpoint. See `python compare.py run --help` for the SLURM options.
+`summarize` prints, per split, `PDE / no-PDE (runs where PDE is better)` at each run's selected checkpoint; `--part test` or `--part eval` reads the test or `--eval_data` line instead of the validation one, and the two split seeds of a group-split fraction are averaged together. See `python compare.py run --help` for the SLURM options.
+
+Group splits with two split seeds and three seeds each (`--eval_data` adds records at new voltages):
+
+```bash
+python compare.py run --data data/rram.mat --slurm --seeds 0 1 2 --out results/compare_group \
+    --splits frac_0.05_split_0 frac_0.05_split_1 frac_0.1_split_0 frac_0.1_split_1 frac_1.0_split_0 frac_1.0_split_1 -- --epochs 4000
+python compare.py summarize --out results/compare_group --part test
+```
 
 ### Recommend parameters with the CVAE
 
